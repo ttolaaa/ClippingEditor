@@ -1,0 +1,46 @@
+# Build-from-source deployment (no container registry needed).
+# The server keeps a git clone of the repo; the `updater` service polls git and
+# rebuilds + restarts the app whenever new commits land on the tracked branch.
+#
+#   git clone https://github.com/ttolaaa/ClippingEditor.git && cd ClippingEditor
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# See README → "Deploy with Docker Compose" → "Option B".
+
+name: clipping
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-local}
+    image: clipping:local
+    container_name: clipping
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+
+  # Polls the git remote; on a new commit it pulls, rebuilds the image and recreates `app`.
+  updater:
+    image: docker:27-cli
+    container_name: clipping-updater
+    restart: unless-stopped
+    working_dir: /repo
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/repo
+    environment:
+      BRANCH: ${DEPLOY_BRANCH:-main}
+      INTERVAL: ${UPDATE_INTERVAL:-60}
+      COMPOSE_FILE: docker-compose.build.yml
+      COMPOSE_PROJECT_NAME: clipping
+      # For a private repo, set GIT_TOKEN to a GitHub token with read access.
+      GIT_TOKEN: ${GIT_TOKEN:-}
+    entrypoint: ["/bin/sh", "/repo/deploy/auto-update.sh"]

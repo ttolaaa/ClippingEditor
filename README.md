@@ -143,12 +143,12 @@ npm run dev        # http://localhost:3000
 
 ```bash
 npm run build
-npm start          # serves the optimized app on http://localhost:3000
+npm start          # runs the standalone server on http://localhost:3000 (same as the Docker image)
 ```
 
 Type-check with `npm run lint`.
 
-> Deploying: any Node host that runs `next start` works. Keep the `Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy` headers from `next.config.ts`, because they enable multi-threaded WebAssembly for faster transcription.
+> Keep the `Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy` headers from `next.config.ts`, because they enable multi-threaded WebAssembly for faster transcription.
 
 ### Optional: cloud AI (`.env.local`)
 
@@ -162,6 +162,109 @@ OPENAI_BASE_URL=             # optional OpenAI-compatible endpoint
 ```
 
 The key stays on the server, and the browser goes through the `/api/ai/*` proxy. GPT receives only the transcript **text**. Audio is sent to the server only if you pick "Cloud Whisper API".
+
+---
+
+## Deploy with Docker Compose (auto-updates on every commit)
+
+Pick **one** of the two options below. Both keep the app running at `http://<server>:3000` and redeploy it automatically when you push a new commit to `main`.
+
+| | Option A: Registry + Watchtower (recommended) | Option B: Build on the server |
+| --- | --- | --- |
+| Compose file | `docker-compose.yml` | `docker-compose.build.yml` |
+| Where the image is built | GitHub Actions | Your server |
+| Server needs | Docker only | Docker + a git clone of the repo |
+| Update flow | push → CI builds and publishes `ghcr.io/ttolaaa/clippingeditor` → Watchtower pulls it | push → the `updater` container sees the new commit → `git pull` → rebuild → restart |
+| Typical delay | CI build (~3 min) + poll interval | poll interval + server build (~2 min) |
+
+**Requirements:** Docker Engine 24+ with the Compose plugin (v2.24+). The published image (Option A) is `linux/amd64`. On ARM servers (e.g. a Raspberry Pi), use Option B, which builds natively.
+
+### Option A: GitHub Actions + Watchtower (recommended)
+
+```
+git push ──▶ GitHub Actions (.github/workflows/docker.yml)
+              │  type-check → docker build → push ghcr.io/ttolaaa/clippingeditor:latest (+ :sha-xxxxxxx)
+              ▼
+        your server ──▶ Watchtower polls the registry every 60s
+              │  new image? pull it → recreate the `clipping` container → remove the old image
+              ▼
+        http://<server>:3000 is now running the new commit
+```
+
+1. **Push to `main`.** The workflow builds and publishes the image automatically. You can follow it under the repo's **Actions** tab, and the image appears under **Packages**.
+2. **On the server**, create a folder containing `docker-compose.yml` and a `.env` file:
+
+   ```bash
+   mkdir clipping && cd clipping
+   curl -fsSLO https://raw.githubusercontent.com/ttolaaa/ClippingEditor/main/docker-compose.yml   # or copy it over
+   curl -fsSL -o .env https://raw.githubusercontent.com/ttolaaa/ClippingEditor/main/.env.example
+   ```
+
+   The repository is **private**, so its image on GHCR is private too. Create a GitHub token (classic) with the **`read:packages`** scope, then log in and give Watchtower the same credentials in `.env`:
+
+   ```bash
+   echo "<token>" | docker login ghcr.io -u <github-username> --password-stdin
+   # .env
+   REGISTRY_USER=<github-username>
+   REGISTRY_TOKEN=<token>
+   ```
+
+   (While the repo is private, use the token in the `curl` commands above too, or just `scp` the two files over.)
+3. **Start it:**
+
+   ```bash
+   docker compose up -d
+   docker compose ps                       # app should become "healthy"
+   curl http://localhost:3000/api/health   # {"status":"ok","version":"<git sha>",...}
+   ```
+
+That's it. Every new commit on `main` is live about a minute after its CI build finishes. `/api/health` reports which commit is running.
+
+**Instant updates (optional).** Instead of waiting for the poll, CI can tell Watchtower to update right away:
+- On the server, set `WATCHTOWER_HTTP_API=true`, `WATCHTOWER_TOKEN=<long random string>` and `WATCHTOWER_BIND=0.0.0.0` in `.env`, then run `docker compose up -d`.
+- In the GitHub repo, add the secrets **`WATCHTOWER_URL`** (`http://<server>:8080`) and **`WATCHTOWER_TOKEN`**.
+
+Put port 8080 behind a firewall or reverse proxy if you can.
+
+**Roll back / pin a version:** set `APP_IMAGE=ghcr.io/ttolaaa/clippingeditor:sha-<7-char-sha>` in `.env` and run `docker compose up -d`. Watchtower only updates the tag you pin.
+
+### Option B: Build from source on the server (no registry)
+
+```bash
+git clone https://github.com/ttolaaa/ClippingEditor.git
+cd ClippingEditor
+cp .env.example .env          # for a private repo set GIT_TOKEN (GitHub token with repo read access)
+docker compose -f docker-compose.build.yml up -d --build
+```
+
+The `updater` service (`deploy/auto-update.sh`) runs `git fetch` every `UPDATE_INTERVAL` seconds. When `origin/main` has new commits, it resets the clone to that commit and runs `docker compose up -d --build app`. If a build fails, the previous version keeps running. To see what it's doing:
+
+```bash
+docker compose -f docker-compose.build.yml logs -f updater
+```
+
+> The updater resets the clone to `origin/main`, so don't edit files inside that clone on the server. Keep settings in `.env`, which is git-ignored.
+
+### Useful settings (`.env`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | Host port for the app |
+| `UPDATE_INTERVAL` | `60` | Seconds between update checks |
+| `APP_IMAGE` | `ghcr.io/ttolaaa/clippingeditor:latest` | Image to run (Option A) |
+| `REGISTRY_USER` / `REGISTRY_TOKEN` | — | GHCR login for a private image (Option A) |
+| `DEPLOY_BRANCH` / `GIT_TOKEN` | `main` / — | Branch to follow, and repo token (Option B) |
+| `OPENAI_API_KEY` … | — | Optional cloud AI (see above) |
+
+### HTTPS
+
+Browsers only allow the features this app relies on (WebCodecs, multi-threaded WASM, video downloads) on **`https://`** or `localhost`. In production, put the app behind a TLS reverse proxy, e.g. [Caddy](https://caddyserver.com):
+
+```
+clips.example.com {
+  reverse_proxy localhost:3000
+}
+```
 
 ---
 
@@ -184,12 +287,14 @@ The preview player and the exporter share **one canvas renderer**, so what you s
 
 ```
 src/
-├─ app/                 Next.js pages + optional AI proxy routes (/api/ai/*, /api/config)
-├─ components/          UI: upload, processing dashboard, clip grid, editor, ReelPlayer
+├─ app/                 Next.js pages + API routes (/api/ai/* optional proxy, /api/config, /api/health)
+├─ components/          UI: upload, clipping rules, processing dashboard, clip grid, editor, ReelPlayer
 └─ lib/
    ├─ browser/          IndexedDB store, pipeline orchestration, Web Workers, ffmpeg.wasm fallback
-   ├─ engine/           Pure analysis: signals, moments & plot twists, scoring, reframing, renderer
+   ├─ engine/           Pure analysis: signals, moments & plot twists, rules, scoring, reframing, renderer
    └─ server/           OpenAI helpers for the optional proxy
+Dockerfile, docker-compose*.yml, deploy/   Container image + auto-updating deployments
+.github/workflows/docker.yml               CI: build & publish the image on every push to main
 ```
 
 Built with Next.js, TypeScript, Tailwind CSS, Mediabunny, transformers.js and ffmpeg.wasm.

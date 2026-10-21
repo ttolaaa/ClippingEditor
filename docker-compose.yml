@@ -1,0 +1,47 @@
+# Production deployment: pulls the image built by GitHub Actions on every push to main,
+# and Watchtower automatically updates the app when a new image is published.
+#
+#   cp .env.example .env      # set APP_IMAGE / PORT (and optionally OPENAI_API_KEY)
+#   docker compose up -d
+#
+# See README → "Deploy with Docker Compose".
+
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/ttolaaa/clippingeditor:latest}
+    container_name: clipping
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    labels:
+      # Only containers with this label are updated by Watchtower.
+      com.centurylinklabs.watchtower.enable: "true"
+
+  # Watches the registry and redeploys the app when CI publishes a new image.
+  watchtower:
+    image: nickfedor/watchtower:latest
+    container_name: clipping-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_POLL_INTERVAL: ${UPDATE_INTERVAL:-60}
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      # Registry login for a private GHCR package (GitHub username + token with read:packages).
+      REPO_USER: ${REGISTRY_USER:-}
+      REPO_PASS: ${REGISTRY_TOKEN:-}
+      # Optional: let CI trigger an instant update over HTTP (see README).
+      WATCHTOWER_HTTP_API_UPDATE: ${WATCHTOWER_HTTP_API:-false}
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_TOKEN:-}
+      WATCHTOWER_HTTP_API_PERIODIC_POLLS: "true"
+    ports:
+      # Only reachable from the server itself unless you set WATCHTOWER_BIND=0.0.0.0.
+      - "${WATCHTOWER_BIND:-127.0.0.1}:${WATCHTOWER_PORT:-8080}:8080"

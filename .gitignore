@@ -7,3 +7,4 @@ storage
 *.tsbuildinfo
 next-env.d.ts
 public/ffmpeg
+.env
