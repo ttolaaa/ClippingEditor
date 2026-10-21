@@ -1,17 +1,21 @@
-import type { Moment, PlotTwist, ScoreBreakdown, Transcript } from "../types";
+import type { ClipRules, FocusType, Moment, PlotTwist, ScoreBreakdown, Transcript } from "../types";
 import { BIN, type Timeline } from "./analysis";
+import { FOCUS_LABEL, keywordRegex } from "./rules";
 
 export interface Candidate {
   start: number;
   end: number;
   target: number;
   raw: number;
+  /** Ranking score: viral potential plus how well the clip fits the creator's rules. */
+  rank: number;
   viralScore: number;
   scores: ScoreBreakdown;
   tags: string[];
   twistAt?: number;
   hasPlotTwist: boolean;
   reason: string;
+  ruleMatches: string[];
 }
 
 const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
@@ -144,10 +148,68 @@ export function selectClips(
   moments: Moment[],
   durations: number[],
   maxPerDuration: number,
+  rules?: ClipRules,
+): { clips: Candidate[]; notes: string[] } {
+  const notes: string[] = [];
+  const hasTranscript = transcript.words.length > 10;
+  if (!rules) return { clips: pickClips(tl, transcript, twists, moments, durations, maxPerDuration, null), notes };
+  if (!hasTranscript && (rules.includeKeywords.length || rules.excludeKeywords.length))
+    notes.push("Keyword rules were skipped because no speech transcript is available.");
+  const winStart = Math.max(0, rules.startAt || 0);
+  const winEnd = Math.min(rules.endAt ?? tl.duration, tl.duration - (rules.skipEnd || 0));
+  const tooLong = durations.filter((d) => d * 0.75 > winEnd - winStart);
+  if (tooLong.length && tooLong.length < durations.length)
+    notes.push(`Your time range is only ${Math.max(0, Math.round(winEnd - winStart))}s long, so no ${tooLong.map((d) => `${d}s`).join("/")} reels could be made from it.`);
+  const attempts: [ClipRules, string | null][] = [
+    [rules, null],
+    [{ ...rules, minScore: 0, requireTwist: false, keywordMode: "prefer" }, "No clip matched every rule, so the minimum score / required twist / required keywords were relaxed."],
+    [{ ...rules, minScore: 0, requireTwist: false, keywordMode: "prefer", excludeKeywords: [] }, "No clip matched your rules, so excluded keywords were also relaxed."],
+    [{ ...rules, minScore: 0, requireTwist: false, keywordMode: "prefer", excludeKeywords: [], startAt: 0, endAt: null, skipEnd: 0 }, "Your time range was too short for the chosen clip lengths, so the whole video was used."],
+  ];
+  for (const [r, note] of attempts) {
+    const clips = pickClips(tl, transcript, twists, moments, durations, maxPerDuration, r, true);
+    if (clips.length) {
+      if (note) notes.push(note);
+      return { clips, notes };
+    }
+  }
+  notes.push("No clip could satisfy your rules — showing the best clips without them.");
+  return { clips: pickClips(tl, transcript, twists, moments, durations, maxPerDuration, null), notes };
+}
+
+const toViral = (raw: number) => Math.round(Math.max(5, Math.min(99, 100 / (1 + Math.exp(-(raw - 0.5) * 8)))));
+
+/** Fast word lookup for a time window (words are sorted by start time). */
+function wordsBetween(words: Transcript["words"], s: number, e: number): string {
+  let lo = 0;
+  let hi = words.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (words[mid].start < s - 0.05) lo = mid + 1;
+    else hi = mid;
+  }
+  const out: string[] = [];
+  for (let i = lo; i < words.length && words[i].start <= e; i++) if (words[i].end <= e + 0.3) out.push(words[i].text);
+  return out.join(" ");
+}
+
+function pickClips(
+  tl: Timeline,
+  transcript: Transcript,
+  twists: PlotTwist[],
+  moments: Moment[],
+  durations: number[],
+  maxPerDuration: number,
+  rules: ClipRules | null,
+  strict = false,
 ): Candidate[] {
   const hasTranscript = transcript.words.length > 10;
   const total = tl.duration;
   const segs = transcript.segments;
+  const winStart = rules ? Math.max(0, Math.min(total, rules.startAt || 0)) : 0;
+  const winEnd = rules ? Math.max(winStart, Math.min(rules.endAt ?? total, total - (rules.skipEnd || 0))) : total;
+  const includeRe = rules && hasTranscript ? rules.includeKeywords.map((k) => [k, keywordRegex(k)] as const) : [];
+  const excludeRe = rules && hasTranscript ? rules.excludeKeywords.map((k) => keywordRegex(k)) : [];
 
   // Candidate start points: sentence starts (clean entry) or a grid + scene cuts.
   let starts: number[] = [];
@@ -158,7 +220,7 @@ export function selectClips(
     for (let t = 0; t < total; t += step) starts.push(t);
     for (let i = 0; i < tl.n; i++) if (tl.cut[i]) starts.push(i * BIN);
   }
-  starts = [...new Set(starts.map((s) => Math.round(s * 10) / 10))].sort((a, b) => a - b);
+  starts = [...new Set(starts.map((s) => Math.round(s * 10) / 10))].sort((a, b) => a - b).filter((s) => s >= winStart - 0.2);
   const ends = hasTranscript ? segs.map((sg) => Math.min(total, sg.end + 0.25)) : [];
 
   const all: Candidate[] = [];
@@ -166,42 +228,80 @@ export function selectClips(
   for (const D of sortedDurations) {
     const minLen = D * 0.75;
     const maxLen = D === 60 ? 60 : D * 1.12;
-    if (total < minLen) continue;
+    if (winEnd - winStart < minLen) continue;
     const cands: Candidate[] = [];
     for (const s of starts) {
-      if (s + minLen > total) break;
-      let e = Math.min(total, s + D);
+      if (s + minLen > winEnd) break;
+      let e = Math.min(winEnd, s + D);
       if (hasTranscript) {
         // Snap to the sentence end closest to the target length.
         let bestEnd = -1;
         let bestDiff = Infinity;
         for (const en of ends) {
           if (en < s + minLen) continue;
-          if (en > s + maxLen) break;
+          if (en > s + maxLen || en > winEnd + 0.3) break;
           const diff = Math.abs(en - s - D);
           if (diff < bestDiff) {
             bestDiff = diff;
             bestEnd = en;
           }
         }
-        if (bestEnd > 0) e = bestEnd;
+        if (bestEnd > 0) e = Math.min(bestEnd, total);
       }
       if (e - s < minLen) continue;
       const sc = scoreWindow(tl, s, e, twists, moments, hasTranscript);
+      const hasPlotTwist = sc.twist >= 0.45;
+      const viralScore = toViral(sc.raw);
+      let rank = sc.raw;
+      const ruleMatches: string[] = [];
+      if (rules) {
+        if (rules.requireTwist && !hasPlotTwist) continue;
+        if (rules.minScore && viralScore < rules.minScore) continue;
+        if (includeRe.length || excludeRe.length) {
+          const text = wordsBetween(transcript.words, s, e);
+          if (excludeRe.some((re) => re.test(text))) continue;
+          const hits = includeRe.filter(([, re]) => re.test(text)).map(([k]) => k);
+          if (rules.keywordMode === "require" && includeRe.length && !hits.length) continue;
+          if (hits.length) {
+            rank += Math.min(0.24, 0.12 * hits.length);
+            ruleMatches.push(`Mentions “${hits.join("”, “")}”`);
+          }
+        }
+        if (rules.focus.length) {
+          const a = Math.max(0, Math.floor(s / BIN));
+          const b = Math.min(tl.n, Math.ceil(e / BIN));
+          const peak = (arr: number[]) => Math.max(0, ...arr.slice(a, b));
+          const values: Record<FocusType, number> = {
+            funny: Math.max(peak(tl.lex.funny), sc.tags.includes("funny") ? 0.6 : 0),
+            emotional: Math.max(sc.scores.emotion / 100, peak(tl.lex.emotional)),
+            plot_twist: sc.scores.twist / 100,
+            high_energy: sc.scores.energy / 100,
+            insightful: peak(tl.lex.insight),
+            hook: sc.scores.hook / 100,
+          };
+          const v = rules.focus.map((f) => values[f]);
+          rank += 0.3 * (v.reduce((x, y) => x + y, 0) / v.length);
+          for (const f of rules.focus) if (values[f] >= 0.45) ruleMatches.push(FOCUS_LABEL[f]);
+        }
+        if (rules.requireTwist) ruleMatches.push("Plot twist");
+        if (rules.minScore) ruleMatches.push(`Score ≥ ${rules.minScore}`);
+      }
       cands.push({
         start: s,
         end: e,
         target: D,
         raw: sc.raw,
-        viralScore: 0,
+        rank,
+        viralScore,
         scores: sc.scores,
         tags: sc.tags,
         twistAt: sc.twistAt,
-        hasPlotTwist: sc.twist >= 0.45,
+        hasPlotTwist,
         reason: sc.reason,
+        ruleMatches: [...new Set(ruleMatches)],
       });
     }
-    cands.sort((a, b) => b.raw - a.raw);
+    cands.sort((a, b) => b.rank - a.rank);
     const picked: Candidate[] = [];
     for (const c of cands) {
       if (picked.length >= maxPerDuration) break;
@@ -214,28 +314,27 @@ export function selectClips(
   }
 
   // Very short source: offer the whole video as a single reel.
-  if (!all.length && total > 2) {
+  if (!all.length && total > 2 && !strict) {
     const sc = scoreWindow(tl, 0, total, twists, moments, hasTranscript);
     all.push({
       start: 0,
       end: total,
       target: total <= 15 ? 15 : total <= 30 ? 30 : 60,
       raw: sc.raw,
-      viralScore: 0,
+      rank: sc.raw,
+      viralScore: toViral(sc.raw),
       scores: sc.scores,
       tags: sc.tags,
       twistAt: sc.twistAt,
       hasPlotTwist: sc.twist >= 0.45,
       reason: sc.reason,
+      ruleMatches: [],
     });
   }
 
-  // Map raw scores to a 0-100 viral score (logistic curve centered on an "average" clip).
-  for (const c of all) {
-    c.viralScore = Math.round(Math.max(5, Math.min(99, 100 / (1 + Math.exp(-(c.raw - 0.5) * 8)))));
-    if (c.twistAt !== undefined) c.twistAt = Math.round(c.twistAt * 100) / 100;
-  }
-  return all.sort((a, b) => b.viralScore - a.viralScore);
+  for (const c of all) if (c.twistAt !== undefined) c.twistAt = Math.round(c.twistAt * 100) / 100;
+  // Best match first: with rules this blends viral potential and how well the clip fits the rules.
+  return all.sort((a, b) => b.rank - a.rank);
 }
 
 // ---------------------------------------------------------------- metadata

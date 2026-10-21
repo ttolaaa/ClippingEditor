@@ -9,6 +9,7 @@
 Drop in a podcast, stream, vlog or interview (MP4, MOV or AVI). Clipping then does the following:
 
 - 🎯 **Finds the best moments:** funny, emotional, unexpected and high-energy parts of the video.
+- 🧭 **Follows your clipping rules:** describe what you want in plain English, or set focus, keywords, time range and a quality bar.
 - 🔀 **Detects plot twists:** reveals and "wait, what?!" moments, so every clip lands its payoff.
 - 🏆 **Ranks clips by viral score (0–100):** the score combines the hook, emotion, energy, pacing, retention and twist.
 - ✂️ **Cuts 15s, 30s and 60s reels:** clips start and end on full sentences, not mid-word.
@@ -37,9 +38,40 @@ Open the app, then drag a video onto the upload box (or click it to browse).
 | **Spoken language** | Helps the speech recognition. |
 | **Captions / transcription** | **Accurate** (better captions) or **Fast** (quicker), both in the browser. You can also turn transcription **Off** for videos without speech. |
 
-Click **Generate viral clips**.
+Click **Generate viral clips** when you're ready. Before that, you can optionally set your clipping rules (step 2).
 
-### 2. Watch it work
+### 2. Set your clipping rules (optional)
+
+Below the settings, the **Clipping rules** section tells the AI *how* to clip, before anything is generated.
+
+![Clipping rules: plain-English instructions, focus, keywords, time range and quality bar](docs/screenshots/01b-rules.png)
+
+- **Describe how to clip, in your own words.** Type something like *"Skip the first 2 minutes, focus on funny moments about money. Avoid swearing."* The app shows what it **understood** as green chips while you type, entirely on your device.
+- **Quick templates:** one click for *Plot twists only*, *Funny moments*, *Emotional story*, *Tips & insights*, *Skip intro & outro* or *Only top clips*.
+- Or fine-tune the rules yourself:
+
+| Rule | What it does |
+| --- | --- |
+| **Focus on moments that are…** | Funny, Emotional, Plot twists, High energy, Tips & insights, Strong hooks. Matching clips are ranked higher. |
+| **Must talk about** | Keywords to look for. Choose **Prefer these** (rank higher) or **Only clips with these** (required). |
+| **Avoid** | Clips that mention any of these words are skipped. |
+| **Use only this part of the video** | **From** / **To** (mm:ss) and **Skip last** let you cut intros, sponsor reads and outros. |
+| **Quality bar** | **Only clips with a plot twist**, and a **minimum viral score**. |
+
+The **Rules applied** bar shows everything that will be used. Your rules are remembered for the next video, and **Reset** clears them.
+
+Example instructions the app understands:
+
+| You type | Understood as |
+| --- | --- |
+| *Only plot twists. Skip the intro and outro.* | Focus: Plot twists · Plot twist required · From 0:30 · Skip last 0:30 |
+| *Clips must mention crypto or bitcoin. No sponsor reads.* | Must mention: crypto, bitcoin · Avoid: sponsor reads |
+| *Only from 10:00 to 25:30, give me tips and advice, minimum score 70* | Focus: Tips & insights · From 10:00 · Until 25:30 · Viral score ≥ 70 |
+| *Emotional story about my mom, without sad music* | Focus: Emotional · Prefer: mom · Avoid: sad music |
+
+> If no clip can satisfy every rule, the app relaxes them step by step and tells you what it changed, so you always get clips. With cloud AI enabled, your instructions are also passed to GPT.
+
+### 3. Watch it work
 
 The video is analysed right in your browser. You can see each step, the overall progress, the estimated time remaining, and how many clips are ready.
 
@@ -47,19 +79,23 @@ The video is analysed right in your browser. You can see each step, the overall 
 
 > ⏱️ A 90-second video takes about 1–2 minutes. The first run also downloads the speech model once (about 40–80 MB), and after that it's cached. **Keep the tab open while it processes.**
 
-### 3. Browse your reels
+### 4. Browse your reels
 
-When processing finishes, your reels appear ranked by **viral score**:
+When processing finishes, your reels appear ranked by **best match**, which combines viral potential with how well each clip fits your rules:
 
 - **Hover** a card for a live 9:16 preview with captions.
 - **Filter** by 15s, 30s or 60s, or by **Plot twists**.
-- **Sort** by viral score or by position in the original video.
+- **Sort** by best match, viral score, or position in the original video.
+
+If you set clipping rules, they're listed under the project title, and each clip shows which rules it **matched** (orange ✓ chips):
+
+![Clips generated with clipping rules, showing the rules applied and what each clip matched](docs/screenshots/03b-clips-rules.png)
 
 Scroll down to the **AI analysis** panel. It shows an engagement heatmap of the whole video, where each clip sits on the timeline, and every detected plot twist with a confidence score. Click a twist to jump to it.
 
 ![AI analysis: heatmap, clip timeline and detected plot twists](docs/screenshots/04-analysis.png)
 
-### 4. Polish a clip
+### 5. Polish a clip
 
 Click **Edit captions** on any reel to open the editor. Every change shows instantly in the preview and is saved automatically in your browser.
 
@@ -75,7 +111,7 @@ Click **Edit captions** on any reel to open the editor. Every change shows insta
 
 ![Clip details: score breakdown, post copy and reframing](docs/screenshots/07-editor-details.png)
 
-### 5. Download and post
+### 6. Download and post
 
 Click **Download 1080×1920 MP4**, either in the editor or on a clip card. The reel is rendered in your browser and saved to your Downloads folder, ready to upload to TikTok, Reels, Shorts or Facebook.
 
@@ -139,6 +175,7 @@ The key stays on the server, and the browser goes through the `/api/ai/*` proxy.
 | Audio WebCodecs can't decode (some browsers) | Browser | ffmpeg.wasm fallback (`convert.ts`) |
 | Speech-to-text with word timings | Web Worker | Whisper via [transformers.js](https://huggingface.co/docs/transformers.js), multi-threaded WASM (`whisper.worker.ts`) |
 | Viral moments, plot twists, scoring, crop paths | Browser | `src/lib/engine/*` |
+| Clipping rules: plain-English parsing, filtering, re-ranking | Browser | `engine/rules.ts`, `engine/select.ts` |
 | Live 9:16 preview with captions | Browser (canvas) | `ReelPlayer` + `engine/renderer.ts` |
 | 1080×1920 MP4 export with burned-in captions | Web Worker | Mediabunny `Conversion` (H.264 + AAC) |
 | *Optional:* GPT titles and moments, Whisper API | Server proxy | `/api/ai/*`, only if `OPENAI_API_KEY` is set |

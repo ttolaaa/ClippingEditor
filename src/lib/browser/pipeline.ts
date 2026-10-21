@@ -5,6 +5,7 @@ import { groupWordsIntoLines, presetStyle } from "../captions";
 import type { AudioSignal, VisualSignal } from "../engine/signals";
 import { applyMomentsToTimeline, buildTimeline, detectPlotTwists, heuristicMoments, interestCurve, mergeTwists } from "../engine/analysis";
 import { clipText, heuristicMeta, selectClips, type Candidate } from "../engine/select";
+import { describeRules, effectiveRules, hasRules } from "../engine/rules";
 import { computeCropPath } from "../engine/reframe";
 import { LANGUAGES, buildSegments, normalizeWords, spreadWords } from "../engine/transcript";
 import { activeJobs, getBlob, getJob, loadJobs, putBlob, putData, putJob, updateClip, updateJob } from "./store";
@@ -313,7 +314,7 @@ async function processJob(id: string) {
   let summary = "";
   let aiProvider: "cloud" | "browser" = "browser";
   if (useCloudAI) {
-    const ai = await cloudMoments(transcript, info.duration, (f) => stage(id, "analyze", { progress: f * 0.9 }));
+    const ai = await cloudMoments(transcript, info.duration, (f) => stage(id, "analyze", { progress: f * 0.9 }), job.settings.rules?.instructions);
     if (ai.moments.length) {
       aiProvider = "cloud";
       moments = [...ai.moments, ...moments];
@@ -329,11 +330,13 @@ async function processJob(id: string) {
   });
   stage(id, "analyze", { status: "done", detail: `${moments.length} moments, ${twists.length} potential plot twists` });
 
-  // 6. Select & rank clips
-  stage(id, "select", { status: "active" });
-  const cands = selectClips(tl, transcript, twists, moments, job.settings.durations, job.settings.maxClipsPerDuration);
+  // 6. Select & rank clips (applying the creator's clipping rules)
+  const rules = hasRules(job.settings.rules) ? effectiveRules(job.settings.rules!) : undefined;
+  stage(id, "select", { status: "active", detail: rules ? `Applying your rules: ${describeRules(rules).join(" · ") || "custom instructions"}` : undefined });
+  const { clips: cands, notes } = selectClips(tl, transcript, twists, moments, job.settings.durations, job.settings.maxClipsPerDuration, rules);
+  for (const n of notes) warn(id, n);
   if (!cands.length) throw new Error("Could not find any clip candidates in this video.");
-  const metas = useCloudAI ? await cloudMeta(cands, transcript) : [];
+  const metas = useCloudAI ? await cloudMeta(cands, transcript, rules?.instructions) : [];
   const used = new Set<string>();
   const clips: Clip[] = cands.map((c, i) => {
     const meta = metas[i] ?? heuristicMeta(c, transcript, i, used);
@@ -357,6 +360,7 @@ async function processJob(id: string) {
       reason: meta.reason ?? c.reason,
       hashtags: meta.hashtags,
       hasPlotTwist: c.hasPlotTwist,
+      ruleMatches: c.ruleMatches,
       twistAt: c.twistAt,
       status: "rendering",
       progress: 0,
@@ -497,7 +501,7 @@ async function transcribeCloud(id: string, pcm: Float32Array, language?: string)
 
 // ---------------------------------------------------------------- optional cloud AI (text only)
 
-async function cloudMoments(t: Transcript, duration: number, onProgress: (f: number) => void) {
+async function cloudMoments(t: Transcript, duration: number, onProgress: (f: number) => void, instructions?: string) {
   const WINDOW = 900;
   const moments: Moment[] = [];
   const twists: PlotTwist[] = [];
@@ -509,7 +513,7 @@ async function cloudMoments(t: Transcript, duration: number, onProgress: (f: num
   }
   for (let i = 0; i < chunks.length; i++) {
     try {
-      const res = await fetch("/api/ai/moments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ segments: chunks[i], duration }) });
+      const res = await fetch("/api/ai/moments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ segments: chunks[i], duration, instructions }) });
       if (res.ok) {
         const d = await res.json();
         moments.push(...(d.moments ?? []));
@@ -524,10 +528,10 @@ async function cloudMoments(t: Transcript, duration: number, onProgress: (f: num
   return { moments, twists, summary: summaries.join(" ") };
 }
 
-async function cloudMeta(cands: Candidate[], t: Transcript) {
+async function cloudMeta(cands: Candidate[], t: Transcript, instructions?: string) {
   try {
     const items = cands.map((c, i) => ({ id: i, seconds: Math.round(c.end - c.start), plot_twist: c.hasPlotTwist, tags: c.tags, transcript: clipText(t, c.start, c.end).slice(0, 1400) }));
-    const res = await fetch("/api/ai/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
+    const res = await fetch("/api/ai/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items, instructions }) });
     if (!res.ok) return [];
     const d = (await res.json()) as { clips: { id: number; title: string; hook: string; hashtags: string[]; reason?: string }[] };
     const map = new Map(d.clips.map((c) => [c.id, c]));

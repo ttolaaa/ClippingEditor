@@ -4,9 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CAPTION_PRESETS } from "@/lib/captions";
 import { cx, formatBytes } from "@/lib/client";
-import type { ReframeMode, TranscriptionMode } from "@/lib/types";
+import type { ClipRules, ReframeMode, TranscriptionMode } from "@/lib/types";
 import { LANGUAGES } from "@/lib/engine/transcript";
+import { defaultRules, hasRules } from "@/lib/engine/rules";
 import { createProject, serverCaps, type ServerCaps } from "@/lib/browser/pipeline";
+import ClippingRules from "./ClippingRules";
+
+const RULES_KEY = "clipping.rules.v1";
 
 const ACCEPT = [".mp4", ".mov", ".avi", ".m4v", ".webm", ".mkv"];
 
@@ -32,6 +36,16 @@ export default function UploadPanel() {
   const [saving, setSaving] = useState(false);
   const [caps, setCaps] = useState<ServerCaps | null>(null);
   const [browser, setBrowser] = useState<BrowserCaps | null>(null);
+  const [rules, setRulesState] = useState<ClipRules>(defaultRules);
+
+  const setRules = useCallback((r: ClipRules) => {
+    setRulesState(r);
+    try {
+      localStorage.setItem(RULES_KEY, JSON.stringify(r));
+    } catch {
+      // storage unavailable — rules still apply to this upload
+    }
+  }, []);
 
   useEffect(() => {
     serverCaps().then(setCaps);
@@ -40,6 +54,12 @@ export default function UploadPanel() {
       isolated: !!globalThis.crossOriginIsolated,
       threads: navigator.hardwareConcurrency || 1,
     });
+    try {
+      const saved = localStorage.getItem(RULES_KEY);
+      if (saved) setRulesState({ ...defaultRules(), ...JSON.parse(saved) });
+    } catch {
+      // ignore corrupt saved rules
+    }
   }, []);
 
   const pick = useCallback((f: File | undefined | null) => {
@@ -70,6 +90,7 @@ export default function UploadPanel() {
         language,
         transcription,
         whisperModel,
+        rules: hasRules(rules) ? rules : undefined,
       });
       router.push(`/jobs/${id}`);
     } catch (e) {
@@ -231,6 +252,8 @@ export default function UploadPanel() {
         </div>
       </div>
 
+      <ClippingRules value={rules} onChange={setRules} />
+
       <div className="flex flex-col gap-3 border-t border-black/10 bg-black/[0.02] px-6 py-4 sm:flex-row sm:items-center">
         <div className="min-w-0 flex-1">
           {error && <p className="text-sm font-medium text-danger">{error}</p>}
@@ -239,7 +262,7 @@ export default function UploadPanel() {
               {saving
                 ? "Saving video to browser storage…"
                 : durations.length
-                  ? `Up to ${durations.length * perDuration} reels · captions · viral scores · plot-twist detection`
+                  ? `Up to ${durations.length * perDuration} reels · ${hasRules(rules) ? "following your clipping rules" : "captions · viral scores · plot-twist detection"}`
                   : "Pick at least one clip length"}
             </p>
           )}

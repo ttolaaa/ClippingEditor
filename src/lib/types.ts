@@ -152,6 +152,8 @@ export interface Clip {
   hashtags: string[];
   hasPlotTwist: boolean;
   twistAt?: number; // relative to clip start
+  /** Human-readable list of the clipping rules this clip satisfied. */
+  ruleMatches?: string[];
   status: ClipStatus;
   progress: number;
   error?: string;
@@ -166,9 +168,32 @@ export interface Clip {
 
 export type TranscriptionMode = "browser" | "cloud" | "none";
 
+export type FocusType = "funny" | "emotional" | "plot_twist" | "high_energy" | "insightful" | "hook";
+
+/** Creator-defined clipping rules applied before clips are picked. */
+export interface ClipRules {
+  /** Free-text instructions ("skip the intro, focus on funny moments about money"). */
+  instructions: string;
+  focus: FocusType[];
+  includeKeywords: string[];
+  /** "prefer" boosts clips mentioning the keywords, "require" only keeps clips that mention one. */
+  keywordMode: "prefer" | "require";
+  excludeKeywords: string[];
+  requireTwist: boolean;
+  /** Seconds — only use the source from this point. */
+  startAt: number;
+  /** Seconds — only use the source up to this point (null = until the end). */
+  endAt: number | null;
+  /** Seconds to ignore at the end (outro). */
+  skipEnd: number;
+  /** 0 = off. */
+  minScore: number;
+}
+
 export interface JobSettings {
   transcription: TranscriptionMode;
   whisperModel: "tiny" | "base";
+  rules?: ClipRules;
   durations: number[];
   maxClipsPerDuration: number;
   captionPreset: string;

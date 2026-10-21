@@ -22,7 +22,7 @@ export interface Timeline {
   twist: number[]; // 0..1 plot-twist strength
 }
 
-type LexKey = "funny" | "emotional" | "excite" | "twist" | "hook";
+type LexKey = "funny" | "emotional" | "excite" | "twist" | "hook" | "insight";
 
 const LEXICON: Record<LexKey, RegExp[]> = {
   twist: [
@@ -99,6 +99,21 @@ const LEXICON: Record<LexKey, RegExp[]> = {
     /\bnever\b/,
     /\bstop\b/,
   ],
+  insight: [
+    /\blesson\b/,
+    /\btips?\b/,
+    /\badvice\b/,
+    /\bthe (key|secret|trick|reason) (is|to)\b/,
+    /\bhere'?s (how|why|what)\b/,
+    /\bstep (one|two|three|\d)\b/,
+    /\bmistakes?\b/,
+    /\blearn(ed|ing)?\b/,
+    /\bimportant\b/,
+    /\bremember\b/,
+    /\bthe (simple|real) (truth|answer)\b/,
+    /\bif you (want|need)\b/,
+    /\bmake sure\b/,
+  ],
 };
 
 function lexScore(text: string, key: LexKey): number {
@@ -170,7 +185,7 @@ export function buildTimeline(
   }
   const sentenceStart = new Array<boolean>(n).fill(false);
   const sentenceEnd = new Array<boolean>(n).fill(false);
-  const lex = { funny: z(), emotional: z(), excite: z(), twist: z(), hook: z() } as Record<LexKey, number[]>;
+  const lex = { funny: z(), emotional: z(), excite: z(), twist: z(), hook: z(), insight: z() } as Record<LexKey, number[]>;
   for (const seg of transcript.segments) {
     const a = Math.max(0, Math.floor(seg.start / BIN));
     const b = Math.min(n - 1, Math.floor(seg.end / BIN));

@@ -9,13 +9,14 @@ interface AIMomentResponse {
 }
 
 /** Ask GPT for viral moments and plot twists in one transcript window (text only). */
-export async function aiMomentsForChunk(segments: TranscriptSegment[], duration: number) {
+export async function aiMomentsForChunk(segments: TranscriptSegment[], duration: number, instructions = "") {
   const moments: Moment[] = [];
   const twists: PlotTwist[] = [];
   const system =
     "You are an elite short-form video editor who finds viral moments for TikTok, Reels and Shorts. " +
     "Given a timestamped transcript, identify the most engaging moments: funny, emotional, unexpected, plot twists (reveals, reversals, surprising outcomes), insightful or high-energy. " +
-    "Prefer self-contained moments with a strong hook and a payoff. Respond with JSON only.";
+    "Prefer self-contained moments with a strong hook and a payoff. Respond with JSON only." +
+    (instructions ? ` The creator gave these clipping rules — follow them strictly: "${instructions}"` : "");
   const lines = segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`).join("\n").slice(0, 45000);
   const user =
     `Transcript (seconds):\n${lines}\n\nReturn JSON: {"summary": string (1 sentence), "moments": [{"start": number, "end": number, "type": one of ${JSON.stringify(MOMENT_TYPES)}, ` +
@@ -50,9 +51,10 @@ export interface MetaItem {
   transcript: string;
 }
 
-export async function aiMetaFor(items: MetaItem[]) {
+export async function aiMetaFor(items: MetaItem[], instructions = "") {
   const res = await chatJSON<{ clips?: { id: number; title: string; hook: string; hashtags: string[]; reason?: string }[] }>(
-    "You write scroll-stopping metadata for TikTok, Instagram Reels, YouTube Shorts and Facebook Reels. Respond with JSON only.",
+    "You write scroll-stopping metadata for TikTok, Instagram Reels, YouTube Shorts and Facebook Reels. Respond with JSON only." +
+      (instructions ? ` Respect the creator's instructions: "${instructions}"` : ""),
     `For each clip, write: "title" (max 60 chars, curiosity-driven), "hook" (on-screen opening text, max 8 words, may include 1 emoji), ` +
       `"hashtags" (5-8, lowercase, with #), "reason" (why it can go viral, max 18 words).\n` +
       `Return {"clips":[{"id":number,"title":string,"hook":string,"hashtags":string[],"reason":string}]}.\n\nClips:\n${JSON.stringify(items)}`,

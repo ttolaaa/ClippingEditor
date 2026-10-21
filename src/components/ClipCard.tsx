@@ -102,6 +102,15 @@ export default function ClipCard({
           <span>· {clip.targetDuration}s reel</span>
         </div>
         <h3 className="line-clamp-2 font-semibold leading-snug">{clip.title}</h3>
+        {!!clip.ruleMatches?.length && (
+          <div className="mt-2 flex flex-wrap gap-1" title="Clipping rules this clip matched">
+            {clip.ruleMatches.slice(0, 3).map((m) => (
+              <span key={m} className="inline-flex max-w-full items-center gap-1 truncate rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-white">
+                ✓ {m}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mt-2 flex flex-wrap gap-1">
           {clip.tags.slice(0, 4).map((t) => (
             <Tag key={t} tone={tagTone(t)}>

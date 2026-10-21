@@ -8,13 +8,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   if (!config.openaiKey) return NextResponse.json({ error: "Cloud AI is not configured" }, { status: 501 });
-  const body = (await req.json().catch(() => null)) as { segments?: TranscriptSegment[]; duration?: number } | null;
+  const body = (await req.json().catch(() => null)) as { segments?: TranscriptSegment[]; duration?: number; instructions?: string } | null;
   const segments = (body?.segments ?? [])
     .slice(0, 3000)
     .map((s) => ({ text: String(s.text ?? "").slice(0, 500), start: Number(s.start) || 0, end: Number(s.end) || 0 }));
   if (!segments.length) return NextResponse.json({ moments: [], twists: [], summary: "" });
   try {
-    return NextResponse.json(await aiMomentsForChunk(segments, Number(body?.duration) || 0));
+    return NextResponse.json(await aiMomentsForChunk(segments, Number(body?.duration) || 0, String(body?.instructions ?? "").slice(0, 1000)));
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   }

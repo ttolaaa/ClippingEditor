@@ -137,6 +137,11 @@ export default function ClipEditor({
               <h2 className="truncate text-lg font-bold">{draft.title}</h2>
               <div className="mt-1 flex flex-wrap gap-1">
                 {clip.hasPlotTwist && <Tag tone="danger">plot twist @ {formatTime(clip.twistAt ?? 0)}</Tag>}
+                {clip.ruleMatches?.map((m) => (
+                  <Tag key={m} tone="accent">
+                    ✓ {m}
+                  </Tag>
+                ))}
                 {clip.tags
                   .filter((t) => t !== "plot twist")
                   .map((t) => (
