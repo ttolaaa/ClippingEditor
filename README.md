@@ -200,7 +200,9 @@ git push ──▶ GitHub Actions (.github/workflows/docker.yml)
    curl -fsSL -o .env https://raw.githubusercontent.com/ttolaaa/ClippingEditor/main/.env.example
    ```
 
-   The repository is **private**, so its image on GHCR is private too. Create a GitHub token (classic) with the **`read:packages`** scope, then log in and give Watchtower the same credentials in `.env`:
+   **Make the image public once** (it starts out private even in a public repo): on GitHub, open **Packages → clippingeditor → Package settings → Change visibility → Public**. After that, the server can pull it with no login.
+
+   If you'd rather keep the image private, create a GitHub token (classic) with the **`read:packages`** scope, then log in and give Watchtower the same credentials in `.env`:
 
    ```bash
    echo "<token>" | docker login ghcr.io -u <github-username> --password-stdin
@@ -208,8 +210,6 @@ git push ──▶ GitHub Actions (.github/workflows/docker.yml)
    REGISTRY_USER=<github-username>
    REGISTRY_TOKEN=<token>
    ```
-
-   (While the repo is private, use the token in the `curl` commands above too, or just `scp` the two files over.)
 3. **Start it:**
 
    ```bash
@@ -233,7 +233,7 @@ Put port 8080 behind a firewall or reverse proxy if you can.
 ```bash
 git clone https://github.com/ttolaaa/ClippingEditor.git
 cd ClippingEditor
-cp .env.example .env          # for a private repo set GIT_TOKEN (GitHub token with repo read access)
+cp .env.example .env          # GIT_TOKEN is only needed if you fork it into a private repo
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
@@ -252,8 +252,8 @@ docker compose -f docker-compose.build.yml logs -f updater
 | `PORT` | `3000` | Host port for the app |
 | `UPDATE_INTERVAL` | `60` | Seconds between update checks |
 | `APP_IMAGE` | `ghcr.io/ttolaaa/clippingeditor:latest` | Image to run (Option A) |
-| `REGISTRY_USER` / `REGISTRY_TOKEN` | — | GHCR login for a private image (Option A) |
-| `DEPLOY_BRANCH` / `GIT_TOKEN` | `main` / — | Branch to follow, and repo token (Option B) |
+| `REGISTRY_USER` / `REGISTRY_TOKEN` | — | GHCR login, only if the image is private (Option A) |
+| `DEPLOY_BRANCH` / `GIT_TOKEN` | `main` / — | Branch to follow, and repo token for private forks (Option B) |
 | `OPENAI_API_KEY` … | — | Optional cloud AI (see above) |
 
 ### HTTPS
