@@ -30,18 +30,59 @@ export const WHISPER_MODELS = {
 } as const;
 
 export interface ServerCaps {
+  /** Cloud AI usable by this browser (configured on the server and, if required, unlocked with the access code). */
   cloudAI: boolean;
   aiModel: string | null;
   cloudTranscription: boolean;
+  /** The server has an OpenAI key at all. */
+  cloudAvailable: boolean;
+  accessRequired: boolean;
+  budgetExhausted?: boolean;
+}
+
+const ACCESS_KEY = "clipping.aiAccessCode";
+const noCaps: ServerCaps = { cloudAI: false, aiModel: null, cloudTranscription: false, cloudAvailable: false, accessRequired: false };
+
+export function getAccessCode(): string {
+  try {
+    return localStorage.getItem(ACCESS_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Headers for /api/ai/* calls (includes the cloud AI access code if the user entered one). */
+function aiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const code = getAccessCode();
+  return code ? { ...extra, "x-ai-access-code": code } : extra;
 }
 
 let capsPromise: Promise<ServerCaps> | null = null;
 export function serverCaps(): Promise<ServerCaps> {
-  capsPromise ??= fetch("/api/config")
+  capsPromise ??= fetch("/api/config", { headers: aiHeaders(), cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null))
-    .then((c) => c ?? { cloudAI: false, aiModel: null, cloudTranscription: false })
-    .catch(() => ({ cloudAI: false, aiModel: null, cloudTranscription: false }));
+    .then((c) => ({ ...noCaps, ...(c ?? {}) }))
+    .catch(() => noCaps);
   return capsPromise;
+}
+
+/** Save (or clear) the cloud AI access code and re-check what it unlocks. */
+export async function setAccessCode(code: string): Promise<ServerCaps> {
+  try {
+    if (code) localStorage.setItem(ACCESS_KEY, code);
+    else localStorage.removeItem(ACCESS_KEY);
+  } catch {
+    // storage unavailable
+  }
+  capsPromise = null;
+  return serverCaps();
+}
+
+/** Turn a refused /api/ai/* response into a short, user-facing reason. */
+async function cloudRefusal(res: Response): Promise<string | null> {
+  if (![401, 403, 429, 503].includes(res.status)) return null;
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  return data.error || `Cloud AI unavailable (${res.status})`;
 }
 
 function initialStages(): Stage[] {
@@ -315,6 +356,7 @@ async function processJob(id: string) {
   let aiProvider: "cloud" | "browser" = "browser";
   if (useCloudAI) {
     const ai = await cloudMoments(transcript, info.duration, (f) => stage(id, "analyze", { progress: f * 0.9 }), job.settings.rules?.instructions);
+    if (ai.refused) warn(id, `Cloud AI skipped: ${ai.refused}. Moments were picked by on-device AI.`);
     if (ai.moments.length) {
       aiProvider = "cloud";
       moments = [...ai.moments, ...moments];
@@ -336,7 +378,12 @@ async function processJob(id: string) {
   const { clips: cands, notes } = selectClips(tl, transcript, twists, moments, job.settings.durations, job.settings.maxClipsPerDuration, rules);
   for (const n of notes) warn(id, n);
   if (!cands.length) throw new Error("Could not find any clip candidates in this video.");
-  const metas = useCloudAI ? await cloudMeta(cands, transcript, rules?.instructions) : [];
+  let metas: ({ title: string; hook: string; hashtags: string[]; reason?: string } | null)[] = [];
+  if (useCloudAI) {
+    const m = await cloudMeta(cands, transcript, rules?.instructions);
+    metas = m.metas;
+    if (m.refused) warn(id, `Cloud titles skipped: ${m.refused}. Titles and hashtags were written on-device.`);
+  }
   const used = new Set<string>();
   const clips: Clip[] = cands.map((c, i) => {
     const meta = metas[i] ?? heuristicMeta(c, transcript, i, used);
@@ -422,13 +469,28 @@ function buildSummary(t: Transcript, twistCount: number, momentCount: number): s
 
 // ---------------------------------------------------------------- transcription
 
+class CloudRefused extends Error {}
+
 async function transcribeAudio(id: string, pcm: Float32Array, mode: "browser" | "cloud", settings: JobSettings): Promise<Transcript> {
   stage(id, "transcribe", { status: "active", detail: mode === "cloud" ? "Sending audio to Whisper API" : "Starting in-browser Whisper" });
   try {
-    const words = mode === "cloud" ? await transcribeCloud(id, pcm, settings.language) : await transcribeBrowser(id, pcm, settings);
+    let used: "browser" | "cloud" = mode;
+    let words: Word[];
+    if (mode === "cloud") {
+      try {
+        words = await transcribeCloud(id, pcm, settings.language);
+      } catch (e) {
+        if (!(e instanceof CloudRefused)) throw e;
+        // Limit reached / access denied: keep going with free on-device transcription instead.
+        warn(id, `Cloud transcription unavailable (${e.message}) — transcribed in your browser instead.`);
+        stage(id, "transcribe", { detail: "Falling back to in-browser Whisper" });
+        used = "browser";
+        words = await transcribeBrowser(id, pcm, settings);
+      }
+    } else words = await transcribeBrowser(id, pcm, settings);
     const clean = normalizeWords(words);
-    stage(id, "transcribe", { status: "done", detail: `${clean.length} words (${mode === "cloud" ? "Whisper API" : `in-browser Whisper ${settings.whisperModel}`})` });
-    return { provider: mode, language: settings.language, words: clean, segments: buildSegments(clean) };
+    stage(id, "transcribe", { status: "done", detail: `${clean.length} words (${used === "cloud" ? "Whisper API" : `in-browser Whisper ${settings.whisperModel}`})` });
+    return { provider: used, language: settings.language, words: clean, segments: buildSegments(clean) };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Transcription failed", e);
@@ -489,7 +551,9 @@ async function transcribeCloud(id: string, pcm: Float32Array, language?: string)
   const lang = language ? (LANGUAGES[language] ?? "") : "";
   for (let i = 0; i < pieces; i++) {
     stage(id, "transcribe", { progress: i / pieces, detail: `Whisper API part ${i + 1} of ${pieces}` });
-    const res = await fetch(`/api/ai/transcribe?language=${lang}`, { method: "POST", body: wav16k(pcm.subarray(i * CHUNK, (i + 1) * CHUNK)) });
+    const res = await fetch(`/api/ai/transcribe?language=${lang}`, { method: "POST", headers: aiHeaders(), body: wav16k(pcm.subarray(i * CHUNK, (i + 1) * CHUNK)) });
+    const refused = await cloudRefusal(res.clone());
+    if (refused) throw new CloudRefused(refused);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `Cloud transcription failed (${res.status})`);
     const off = (i * CHUNK) / 16000;
@@ -506,6 +570,7 @@ async function cloudMoments(t: Transcript, duration: number, onProgress: (f: num
   const moments: Moment[] = [];
   const twists: PlotTwist[] = [];
   const summaries: string[] = [];
+  let refused: string | null = null;
   const chunks = [];
   for (let s = 0; s < duration; s += WINDOW) {
     const c = t.segments.filter((x) => x.start >= s && x.start < s + WINDOW);
@@ -513,31 +578,31 @@ async function cloudMoments(t: Transcript, duration: number, onProgress: (f: num
   }
   for (let i = 0; i < chunks.length; i++) {
     try {
-      const res = await fetch("/api/ai/moments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ segments: chunks[i], duration, instructions }) });
+      const res = await fetch("/api/ai/moments", { method: "POST", headers: aiHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ segments: chunks[i], duration, instructions }) });
       if (res.ok) {
         const d = await res.json();
         moments.push(...(d.moments ?? []));
         twists.push(...(d.twists ?? []));
         if (d.summary) summaries.push(d.summary);
-      }
+      } else if ((refused = await cloudRefusal(res))) break;
     } catch (e) {
       console.warn("Cloud moment analysis failed", e);
     }
     onProgress((i + 1) / chunks.length);
   }
-  return { moments, twists, summary: summaries.join(" ") };
+  return { moments, twists, summary: summaries.join(" "), refused };
 }
 
-async function cloudMeta(cands: Candidate[], t: Transcript, instructions?: string) {
+async function cloudMeta(cands: Candidate[], t: Transcript, instructions?: string): Promise<{ metas: ({ title: string; hook: string; hashtags: string[]; reason?: string } | null)[]; refused: string | null }> {
   try {
     const items = cands.map((c, i) => ({ id: i, seconds: Math.round(c.end - c.start), plot_twist: c.hasPlotTwist, tags: c.tags, transcript: clipText(t, c.start, c.end).slice(0, 1400) }));
-    const res = await fetch("/api/ai/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items, instructions }) });
-    if (!res.ok) return [];
+    const res = await fetch("/api/ai/meta", { method: "POST", headers: aiHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ items, instructions }) });
+    if (!res.ok) return { metas: [], refused: await cloudRefusal(res) };
     const d = (await res.json()) as { clips: { id: number; title: string; hook: string; hashtags: string[]; reason?: string }[] };
     const map = new Map(d.clips.map((c) => [c.id, c]));
-    return cands.map((_, i) => map.get(i) ?? null);
+    return { metas: cands.map((_, i) => map.get(i) ?? null), refused: null };
   } catch {
-    return [];
+    return { metas: [], refused: null };
   }
 }
 

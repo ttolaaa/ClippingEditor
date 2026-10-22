@@ -7,7 +7,7 @@ import { cx, formatBytes } from "@/lib/client";
 import type { ClipRules, ReframeMode, TranscriptionMode } from "@/lib/types";
 import { LANGUAGES } from "@/lib/engine/transcript";
 import { defaultRules, hasRules } from "@/lib/engine/rules";
-import { createProject, serverCaps, type ServerCaps } from "@/lib/browser/pipeline";
+import { createProject, getAccessCode, serverCaps, setAccessCode, type ServerCaps } from "@/lib/browser/pipeline";
 import ClippingRules from "./ClippingRules";
 
 const RULES_KEY = "clipping.rules.v1";
@@ -61,6 +61,11 @@ export default function UploadPanel() {
       // ignore corrupt saved rules
     }
   }, []);
+
+  // If cloud AI gets locked (or isn't available), don't keep "Cloud Whisper" selected.
+  useEffect(() => {
+    if (caps && !caps.cloudTranscription && transcription === "cloud") setTranscription("browser");
+  }, [caps, transcription]);
 
   const pick = useCallback((f: File | undefined | null) => {
     setError(null);
@@ -249,6 +254,7 @@ export default function UploadPanel() {
               <EngineBadge label="Checking browser capabilities…" />
             )}
           </div>
+          {caps?.cloudAvailable && caps.accessRequired && <AccessCode caps={caps} onCaps={setCaps} />}
         </div>
       </div>
 
@@ -313,5 +319,55 @@ function EngineBadge({ on, label }: { on?: boolean; label: string }) {
       <span className={cx("h-1.5 w-1.5 rounded-full", on ? "bg-success" : "bg-black/30")} />
       {label}
     </span>
+  );
+}
+
+/** Optional code that unlocks the server's cloud AI (GPT / Whisper API); without it the free on-device AI is used. */
+function AccessCode({ caps, onCaps }: { caps: ServerCaps; onCaps: (c: ServerCaps) => void }) {
+  const [code, setCode] = useState("");
+  const [state, setState] = useState<"idle" | "checking" | "wrong">("idle");
+  useEffect(() => setCode(getAccessCode()), []);
+  const submit = async (value: string) => {
+    setState("checking");
+    const next = await setAccessCode(value.trim());
+    onCaps(next);
+    setState(value.trim() && !next.cloudAI ? "wrong" : "idle");
+    if (value.trim() && !next.cloudAI) await setAccessCode("");
+  };
+  if (caps.cloudAI)
+    return (
+      <p className="mt-3 flex items-center gap-2 text-xs text-success">
+        ✓ Cloud AI unlocked on this browser
+        <button type="button" onClick={() => submit("")} className="text-black/40 underline hover:text-black">
+          lock
+        </button>
+      </p>
+    );
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit(code);
+      }}
+      className="mt-3 flex flex-wrap items-center gap-2 text-xs"
+    >
+      <span className="text-black/50">Have a cloud AI access code?</span>
+      <input
+        type="password"
+        value={code}
+        onChange={(e) => {
+          setCode(e.target.value);
+          setState("idle");
+        }}
+        placeholder="Access code"
+        autoComplete="off"
+        className="w-36 rounded-lg border border-black/15 px-2 py-1 outline-none focus:border-black"
+      />
+      <button type="submit" disabled={!code.trim() || state === "checking"} className="rounded-full bg-ink px-3 py-1 font-semibold text-white disabled:opacity-40">
+        {state === "checking" ? "Checking…" : "Unlock"}
+      </button>
+      {state === "wrong" && <span className="font-medium text-danger">Wrong code</span>}
+      <span className="w-full text-black/40">Optional — everything works without it using free on-device AI.</span>
+    </form>
   );
 }

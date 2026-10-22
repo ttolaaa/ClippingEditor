@@ -9,7 +9,11 @@ export function getOpenAI(): OpenAI | null {
   return client;
 }
 
-export async function chatJSON<T>(system: string, user: string, maxTokens = 3000): Promise<T | null> {
+export interface UsageSink {
+  tokens: number;
+}
+
+export async function chatJSON<T>(system: string, user: string, maxTokens = 3000, usage?: UsageSink): Promise<T | null> {
   const c = getOpenAI();
   if (!c) return null;
   const res = await c.chat.completions.create({
@@ -22,6 +26,7 @@ export async function chatJSON<T>(system: string, user: string, maxTokens = 3000
       { role: "user", content: user },
     ],
   });
+  if (usage && res.usage) usage.tokens += res.usage.total_tokens;
   const text = res.choices[0]?.message?.content;
   if (!text) return null;
   try {

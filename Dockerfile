@@ -41,6 +41,10 @@ ENV APP_VERSION=${GIT_SHA}
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
+# Persistent data (daily cloud-AI usage counters); mounted as a volume in docker-compose.
+RUN mkdir -p /app/data && chown node:node /app/data
+ENV AI_USAGE_FILE=/app/data/ai-usage.json
+VOLUME ["/app/data"]
 
 USER node
 EXPOSE 3000

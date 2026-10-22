@@ -1,7 +1,12 @@
 import type { Moment, MomentType, PlotTwist, TranscriptSegment } from "../types";
-import { chatJSON } from "./openai";
+import { chatJSON, type UsageSink } from "./openai";
 
 const MOMENT_TYPES: MomentType[] = ["funny", "emotional", "unexpected", "plot_twist", "insightful", "high_energy"];
+
+export const MOMENTS_MAX_OUTPUT = 3000;
+export const META_MAX_OUTPUT = 4000;
+/** Prompt overhead (system prompt + instructions to the model) in characters, for budget estimates. */
+export const PROMPT_OVERHEAD_CHARS = 1500;
 
 interface AIMomentResponse {
   summary?: string;
@@ -9,7 +14,7 @@ interface AIMomentResponse {
 }
 
 /** Ask GPT for viral moments and plot twists in one transcript window (text only). */
-export async function aiMomentsForChunk(segments: TranscriptSegment[], duration: number, instructions = "") {
+export async function aiMomentsForChunk(segments: TranscriptSegment[], duration: number, instructions = "", usage?: UsageSink) {
   const moments: Moment[] = [];
   const twists: PlotTwist[] = [];
   const system =
@@ -22,7 +27,7 @@ export async function aiMomentsForChunk(segments: TranscriptSegment[], duration:
     `Transcript (seconds):\n${lines}\n\nReturn JSON: {"summary": string (1 sentence), "moments": [{"start": number, "end": number, "type": one of ${JSON.stringify(MOMENT_TYPES)}, ` +
     `"score": number 0-1 (viral potential), "reason": string (max 15 words), "is_plot_twist": boolean, "twist_time": number|null}]}. ` +
     "Return up to 10 moments, each 5-60 seconds, timestamps must come from the transcript.";
-  const res = await chatJSON<AIMomentResponse>(system, user);
+  const res = await chatJSON<AIMomentResponse>(system, user, MOMENTS_MAX_OUTPUT, usage);
   for (const m of res?.moments ?? []) {
     const start = Number(m.start);
     const end = Number(m.end);
@@ -51,14 +56,15 @@ export interface MetaItem {
   transcript: string;
 }
 
-export async function aiMetaFor(items: MetaItem[], instructions = "") {
+export async function aiMetaFor(items: MetaItem[], instructions = "", usage?: UsageSink) {
   const res = await chatJSON<{ clips?: { id: number; title: string; hook: string; hashtags: string[]; reason?: string }[] }>(
     "You write scroll-stopping metadata for TikTok, Instagram Reels, YouTube Shorts and Facebook Reels. Respond with JSON only." +
       (instructions ? ` Respect the creator's instructions: "${instructions}"` : ""),
     `For each clip, write: "title" (max 60 chars, curiosity-driven), "hook" (on-screen opening text, max 8 words, may include 1 emoji), ` +
       `"hashtags" (5-8, lowercase, with #), "reason" (why it can go viral, max 18 words).\n` +
       `Return {"clips":[{"id":number,"title":string,"hook":string,"hashtags":string[],"reason":string}]}.\n\nClips:\n${JSON.stringify(items)}`,
-    4000,
+    META_MAX_OUTPUT,
+    usage,
   );
   return (res?.clips ?? [])
     .filter((c) => c && c.title)

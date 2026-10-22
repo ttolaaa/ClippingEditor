@@ -163,6 +163,27 @@ OPENAI_BASE_URL=             # optional OpenAI-compatible endpoint
 
 The key stays on the server, and the browser goes through the `/api/ai/*` proxy. GPT receives only the transcript **text**. Audio is sent to the server only if you pick "Cloud Whisper API".
 
+#### Protecting your OpenAI credit on a public site
+
+With a key set, `/api/ai/*` is guarded by `src/lib/server/guard.ts`. Before any OpenAI call, each request must pass these checks:
+
+| Layer | Default | What it stops |
+| --- | --- | --- |
+| **Access code** (`AI_ACCESS_CODE`) | off | When set, only people you give the code to can use cloud AI. Everyone else still gets the free on-device AI, at no cost to you. **Recommended for public sites.** |
+| **Same-site check** | on | Other websites calling your API from their visitors' browsers (`403`). |
+| **Per-visitor rate limit** | 20/min, 200/day | Scripts hammering the API from one IP address (`429`). |
+| **Per-visitor daily quota** | 200k tokens, 60 audio min | One visitor using up the whole budget. |
+| **Site-wide daily budget** | 2M tokens, 180 audio min | **Hard cap on total spend per day (UTC)**, even if an attacker rotates IP addresses. It's saved to disk, so restarts and redeploys don't reset it. |
+| **Concurrency and size limits** | 4 parallel calls, 1 MB JSON / 24 MB audio | Bursts and oversized uploads. These are rejected before reaching OpenAI. |
+
+How the defaults translate to cost: 2M tokens of `gpt-4o-mini` is roughly a dollar or two per day at most, and a 1-hour video uses about 15k tokens. When a limit is hit, the app automatically falls back to on-device AI and shows a notice, so users still get their clips.
+
+Also recommended:
+- Set a **monthly budget / usage limit** for the key in your OpenAI dashboard. It's the final safety net.
+- Run the app behind your HTTPS reverse proxy with `APP_BIND=127.0.0.1`. Then visitors can't bypass the proxy, and per-visitor limits use the real client IP. If you use Cloudflare, also set `TRUST_CLOUDFLARE=true`.
+
+All limits are configurable in `.env` (see `.env.example`). Set a limit to `0` to disable it.
+
 ---
 
 ## Deploy with Docker Compose (auto-updates on every commit)
@@ -250,11 +271,13 @@ docker compose -f docker-compose.build.yml logs -f updater
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3000` | Host port for the app |
+| `APP_BIND` | `0.0.0.0` | Set to `127.0.0.1` when an HTTPS reverse proxy runs on the same server |
 | `UPDATE_INTERVAL` | `60` | Seconds between update checks |
 | `APP_IMAGE` | `ghcr.io/ttolaaa/clippingeditor:latest` | Image to run (Option A) |
 | `REGISTRY_USER` / `REGISTRY_TOKEN` | — | GHCR login, only if the image is private (Option A) |
 | `DEPLOY_BRANCH` / `GIT_TOKEN` | `main` / — | Branch to follow, and repo token for private forks (Option B) |
 | `OPENAI_API_KEY` … | — | Optional cloud AI (see above) |
+| `AI_ACCESS_CODE`, `AI_DAILY_TOKENS`, … | see above | Cloud AI protection: access code, rate limits, daily budget |
 
 ### HTTPS
 

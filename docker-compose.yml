@@ -12,13 +12,17 @@ services:
     container_name: clipping
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      # Behind a reverse proxy on the same host (recommended), set APP_BIND=127.0.0.1 so the app is only
+      # reachable through the proxy — this also makes the per-visitor AI rate limits spoof-proof.
+      - "${APP_BIND:-0.0.0.0}:${PORT:-3000}:3000"
     env_file:
       - path: .env
         required: false
     environment:
       PORT: 3000
       HOSTNAME: 0.0.0.0
+    volumes:
+      - clipping-data:/app/data
     labels:
       # Only containers with this label are updated by Watchtower.
       com.centurylinklabs.watchtower.enable: "true"
@@ -45,3 +49,6 @@ services:
     ports:
       # Only reachable from the server itself unless you set WATCHTOWER_BIND=0.0.0.0.
       - "${WATCHTOWER_BIND:-127.0.0.1}:${WATCHTOWER_PORT:-8080}:8080"
+
+volumes:
+  clipping-data:
