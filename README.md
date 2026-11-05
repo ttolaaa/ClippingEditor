@@ -19,6 +19,8 @@ Drop in a podcast, stream, vlog or interview (MP4, MOV or AVI). Clipping then do
 
 🔒 **Private by design.** The video is never uploaded. Transcription, analysis, previews and export all run on your own device (WebCodecs, in-browser Whisper and WebAssembly).
 
+🎌 **Two clippers in one app.** Use the switch in the header: **Viral Clipper** (everything above) or **Anime Clipper** (Japanese clips with furigana and English subtitles, see [Anime Clipper](#anime-clipper)).
+
 ---
 
 ## How to use
@@ -123,6 +125,71 @@ Click **Download 1080×1920 MP4**, either in the editor or on a clip card. The r
 
 ---
 
+## Anime Clipper
+
+Open **Anime Clipper** from the switch in the header (`/anime`). It turns a time range of an anime (or any Japanese-language video) into a 1080×1920 Reel with **Japanese + furigana** and an **English translation**. Like the rest of the app it runs in your browser; nothing is uploaded.
+
+1. **Video:** drop a landscape or portrait video. Formats the browser can't play (AVI, MKV…) are converted on-device.
+2. **Clip range:** type a start and end (`m:ss`), or move the playhead and press **Use playhead**.
+3. **Subtitle layout:**
+
+   | Option | Result |
+   | --- | --- |
+   | **A** Japanese + English | Japanese with furigana on top, English below |
+   | **B** Japanese only | Japanese with furigana |
+   | **C** English only | English translation |
+   | **D** English + Japanese | English on top, Japanese with furigana below |
+
+   **Letterbox fill** is either a blurred copy of the video or a solid dark colour.
+4. **Subtitles:** press **Generate**. Japanese speech is recognised (Whisper, language fixed to Japanese), **translated to English automatically**, and given furigana. Every line is editable (times, Japanese with ruby markup, English), and you can add lines, re-run **Auto furigana** on a line, or **Import / Download JSON**.
+5. **Export:** **Download 1080×1920 MP4** renders the video with the subtitles burned in.
+
+**Layout rules.** The source is never cropped or stretched: it keeps its aspect ratio and is centred in the 9:16 canvas. Landscape sources leave a large band below the video, and the subtitles use that band (ruby text sits directly above its kanji and is never overlapped by the neighbouring text). Portrait or very tall sources have little or no margin, so they are scaled down just enough to free a subtitle band (about a quarter of the height). A small area at the very bottom is kept clear of the Reels/Shorts UI.
+
+**How the subtitles are made**
+
+| Step | Runs in | Tech |
+| --- | --- | --- |
+| Speech to Japanese text | Web Worker | Whisper (tiny / base / small) via transformers.js |
+| Japanese → English | Web Worker (default) | `Xenova/opus-mt-ja-en` (~110 MB, cached after the first run) |
+| Japanese → English (optional) | Server proxy | `/api/ai/translate` when `OPENAI_API_KEY` is set (text only, same limits as the other cloud AI calls); falls back to the on-device model if refused |
+| Furigana | Browser | [kuromoji](https://github.com/sglkc/kuromoji.js) morphological analysis, readings aligned to kanji only (dictionary self-hosted in `public/kuromoji-dict`) |
+| Preview and export | Browser / Web Worker | One shared canvas renderer (`src/lib/anime/renderer.ts`) + Mediabunny (H.264 + AAC) |
+
+Whisper recognition and machine translation are not perfect, especially for fast, noisy or music-heavy scenes. Use the **Accurate** model for better Japanese and review the lines before exporting. The first run downloads the models and dictionary once.
+
+**Subtitle JSON.** *Download JSON* writes, and *Import JSON* reads, this structure (times are absolute seconds in the source video). Japanese can be given as `segments`, as `ruby` markup, or just as plain `text` (furigana is then added on import):
+
+```json
+{
+  "version": 1,
+  "sourceLanguage": "ja",
+  "targetLanguage": "en",
+  "video": { "name": "episode1.mp4", "duration": 1420.5 },
+  "clip": { "start": 62.0, "end": 98.5 },
+  "subtitles": [
+    {
+      "id": "s1",
+      "start": 63.2,
+      "end": 65.8,
+      "text": "今日は天気がいいですね。",
+      "ruby": "<ruby>今日<rt>きょう</rt></ruby>は<ruby>天気<rt>てんき</rt></ruby>がいいですね。",
+      "segments": [
+        { "text": "今日", "ruby": "きょう" },
+        { "text": "は" },
+        { "text": "天気", "ruby": "てんき" },
+        { "text": "がいいですね。" }
+      ],
+      "en": "The weather is nice today."
+    }
+  ]
+}
+```
+
+Subtitle fonts come from the system (Yu Gothic, Hiragino, Noto Sans JP, Meiryo…), so a Japanese-capable font must be installed on the device that exports.
+
+---
+
 ## Build & run
 
 ### Requirements
@@ -135,7 +202,7 @@ Click **Download 1080×1920 MP4**, either in the editor or on a clip card. The r
 ```bash
 git clone https://github.com/ttolaaa/ClippingEditor.git
 cd ClippingEditor
-npm install        # also copies ffmpeg.wasm into public/ffmpeg (postinstall)
+npm install        # also copies ffmpeg.wasm into public/ffmpeg and the furigana dictionary into public/kuromoji-dict (postinstall)
 npm run dev        # http://localhost:3000
 ```
 
@@ -315,6 +382,7 @@ src/
 └─ lib/
    ├─ browser/          IndexedDB store, pipeline orchestration, Web Workers, ffmpeg.wasm fallback
    ├─ engine/           Pure analysis: signals, moments & plot twists, rules, scoring, reframing, renderer
+   ├─ anime/            Anime Clipper: subtitle schema, ruby/furigana, frame layout + renderer, generation pipeline
    └─ server/           OpenAI helpers for the optional proxy
 Dockerfile, docker-compose*.yml, deploy/   Container image + auto-updating deployments
 .github/workflows/docker.yml               CI: build & publish the image on every push to main

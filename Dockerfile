@@ -9,7 +9,7 @@ FROM node:${NODE_VERSION}-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY scripts ./scripts
-# postinstall copies ffmpeg.wasm into public/ffmpeg
+# postinstall copies ffmpeg.wasm into public/ffmpeg and the kuromoji dictionary into public/kuromoji-dict
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 
 # ---------- build: compile the production bundle
@@ -18,6 +18,7 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/public/ffmpeg ./public/ffmpeg
+COPY --from=deps /app/public/kuromoji-dict ./public/kuromoji-dict
 COPY . .
 RUN npm run build
 

@@ -48,6 +48,26 @@ export async function aiMomentsForChunk(segments: TranscriptSegment[], duration:
   return { moments, twists, summary: res?.summary ?? "" };
 }
 
+export const TRANSLATE_MAX_OUTPUT = 4000;
+
+/** Translate numbered Japanese subtitle lines to natural English, keeping one output per input line. */
+export async function aiTranslateLines(lines: string[], usage?: UsageSink): Promise<string[]> {
+  const res = await chatJSON<{ translations?: { id: number; en: string }[] }>(
+    "You are a professional anime subtitle translator. Translate Japanese dialogue into natural, concise English subtitles " +
+      "that keep the speaker's tone. The lines are consecutive dialogue from one clip, so use earlier and later lines as context. " +
+      "Speech recognition may contain small errors; infer the intended meaning. Respond with JSON only.",
+    `Translate every line. Return {"translations":[{"id":number,"en":string}]} with exactly one entry per id.\n\nLines:\n${JSON.stringify(lines.map((text, id) => ({ id, text })))}`,
+    TRANSLATE_MAX_OUTPUT,
+    usage,
+  );
+  const out = lines.map(() => "");
+  for (const t of res?.translations ?? []) {
+    const id = Number(t?.id);
+    if (Number.isInteger(id) && id >= 0 && id < out.length) out[id] = String(t.en ?? "").trim().slice(0, 400);
+  }
+  return out;
+}
+
 export interface MetaItem {
   id: number;
   seconds: number;

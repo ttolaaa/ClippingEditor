@@ -1,4 +1,4 @@
-﻿node_modules
+node_modules
 .next
 out
 storage
@@ -7,4 +7,5 @@ storage
 *.tsbuildinfo
 next-env.d.ts
 public/ffmpeg
+public/kuromoji-dict
 .env

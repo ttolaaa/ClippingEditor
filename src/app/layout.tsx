@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
+import ModeSwitch from "@/components/ModeSwitch";
 
 export const metadata: Metadata = {
   title: "Clipping — AI viral reels from long videos",
@@ -22,8 +23,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </span>
               Clipping<span className="text-accent">.</span>
             </Link>
+            <ModeSwitch />
             <nav className="flex items-center gap-5 text-sm text-black/60">
-              <Link href="/" className="hover:text-black">
+              <Link href="/" className="hidden hover:text-black sm:inline">
                 Projects
               </Link>
               <Link href="/#upload" className="rounded-full bg-black px-4 py-1.5 font-medium text-white hover:bg-accent">

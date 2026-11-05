@@ -60,7 +60,17 @@ function drawTrack(ctx: Ctx, W: number, H: number, src: FrameSource, crop: CropP
 function drawFit(ctx: Ctx, W: number, H: number, src: FrameSource) {
   const sw = src.width;
   const sh = src.height;
-  // Blurred, darkened "cover" background via a down/up-scale (works everywhere, unlike ctx.filter).
+  drawBlurBackground(ctx, W, H, src);
+  const s = Math.min(W / sw, H / sh);
+  const dw = sw * s;
+  const dh = sh * s;
+  src.draw(ctx, 0, 0, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+
+/** Blurred, darkened "cover" background via a down/up-scale (works everywhere, unlike ctx.filter). */
+export function drawBlurBackground(ctx: Ctx, W: number, H: number, src: FrameSource) {
+  const sw = src.width;
+  const sh = src.height;
   const bw = Math.max(8, Math.round(W / 24));
   const bh = Math.max(8, Math.round(H / 24));
   if (typeof OffscreenCanvas !== "undefined") {
@@ -74,10 +84,6 @@ function drawFit(ctx: Ctx, W: number, H: number, src: FrameSource) {
     ctx.fillStyle = "rgba(0,0,0,0.35)";
     ctx.fillRect(0, 0, W, H);
   }
-  const s = Math.min(W / sw, H / sh);
-  const dw = sw * s;
-  const dh = sh * s;
-  src.draw(ctx, 0, 0, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
 }
 
 interface Laid {

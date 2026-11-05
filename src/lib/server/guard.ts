@@ -31,7 +31,7 @@ export const limits = {
   usageFile: process.env.AI_USAGE_FILE?.trim() || path.join(process.cwd(), ".cache", "ai-usage.json"),
 };
 
-export type AiKind = "moments" | "meta" | "transcribe";
+export type AiKind = "moments" | "meta" | "transcribe" | "translate";
 
 interface Counter {
   minute: number; // epoch minute of `minuteCount`

@@ -52,7 +52,7 @@ export function getAccessCode(): string {
 }
 
 /** Headers for /api/ai/* calls (includes the cloud AI access code if the user entered one). */
-function aiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+export function aiHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const code = getAccessCode();
   return code ? { ...extra, "x-ai-access-code": code } : extra;
 }

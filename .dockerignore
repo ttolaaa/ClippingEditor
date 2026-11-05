@@ -4,6 +4,7 @@ out
 storage
 .cache
 public/ffmpeg
+public/kuromoji-dict
 .git
 .github
 .env*

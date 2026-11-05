@@ -25,6 +25,8 @@ import {
 import { registerAacEncoder } from "@mediabunny/aac-encoder";
 import { AUDIO_RATE, Resampler16k, VisualAnalyzer, analyzeAudio } from "../engine/signals";
 import { drawReelFrame, type FrameSource } from "../engine/renderer";
+import { drawAnimeFrame } from "../anime/renderer";
+import type { AnimeRenderOptions, AnimeSubtitle } from "../anime/types";
 import type { CaptionLine, CaptionStyle, CropPath, ReframeMode } from "../types";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -56,7 +58,18 @@ export type WorkerRequest =
       style: CaptionStyle;
       /** Pre-decoded clip audio (used when WebCodecs can't decode the source audio). */
       audio?: { channels: Float32Array[]; sampleRate: number };
-    };
+    }
+  | { task: "pcm"; file: Blob; start: number; end: number }
+  | ({
+      task: "anime-export";
+      file: Blob;
+      start: number;
+      end: number;
+      width: number;
+      height: number;
+      subtitles: AnimeSubtitle[];
+      audio?: { channels: Float32Array[]; sampleRate: number };
+    } & AnimeRenderOptions);
 
 const post = (msg: unknown, transfer: Transferable[] = []) => self.postMessage(msg, transfer);
 
@@ -240,7 +253,68 @@ function ensureAac() {
   return aacReady;
 }
 
+interface ExportJob {
+  file: Blob;
+  start: number;
+  end: number;
+  width: number;
+  height: number;
+  audio?: { channels: Float32Array[]; sampleRate: number };
+}
+
 async function exportClip(req: Extract<WorkerRequest, { task: "export" }>) {
+  await exportWith(req, (ctx, src, t) =>
+    drawReelFrame(ctx, req.width, req.height, src, { mode: req.mode, crop: req.crop, captions: req.captions, style: req.style, t }),
+  );
+}
+
+async function exportAnime(req: Extract<WorkerRequest, { task: "anime-export" }>) {
+  await exportWith(req, (ctx, src, t) =>
+    drawAnimeFrame(ctx, req.width, req.height, src, { layout: req.layout, background: req.background, subtitles: req.subtitles, t: req.start + t }),
+  );
+}
+
+/** Decode [start, end] of the primary audio track to 16 kHz mono PCM (for speech recognition). */
+async function pcmRange(req: Extract<WorkerRequest, { task: "pcm" }>) {
+  const input = open(req.file);
+  try {
+    const at = await input.getPrimaryAudioTrack();
+    if (!at) throw new Error("This video has no audio track.");
+    const sink = new AudioSampleSink(at);
+    const rs = new Resampler16k(at.sampleRate);
+    const span = Math.max(1, req.end - req.start);
+    let lastPost = 0;
+    for await (const s of sink.samples(req.start, req.end)) {
+      const n = s.numberOfFrames;
+      const ch = s.numberOfChannels;
+      const mono = new Float32Array(n);
+      const tmp = new Float32Array(n);
+      for (let c = 0; c < ch; c++) {
+        s.copyTo(tmp, { planeIndex: c, format: "f32-planar" });
+        for (let i = 0; i < n; i++) mono[i] += tmp[i];
+      }
+      if (ch > 1) for (let i = 0; i < n; i++) mono[i] /= ch;
+      const ts = s.timestamp;
+      const dur = s.duration;
+      s.close();
+      // Samples can overlap the range edges; keep only the part inside [start, end].
+      const from = Math.max(0, Math.round(((req.start - ts) / Math.max(dur, 1e-6)) * n));
+      const to = Math.min(n, Math.round(((req.end - ts) / Math.max(dur, 1e-6)) * n));
+      if (to > from) rs.push(from > 0 || to < n ? mono.subarray(from, to) : mono);
+      const now = performance.now();
+      if (now - lastPost > 150) {
+        lastPost = now;
+        post({ type: "progress", value: Math.min(0.99, (ts - req.start) / span) });
+      }
+    }
+    const pcm = rs.result();
+    post({ type: "pcm", pcm }, [pcm.buffer]);
+  } finally {
+    input.dispose();
+  }
+}
+
+async function exportWith(req: ExportJob, draw: (ctx: OffscreenCanvasRenderingContext2D, src: FrameSource, t: number) => void) {
   await ensureAac();
   const input = open(req.file);
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target: new BufferTarget() });
@@ -266,7 +340,7 @@ async function exportClip(req: Extract<WorkerRequest, { task: "export" }>) {
         // Timestamps may be reported relative to the trim start or to the source; handle both.
         const absolute = req.start > 0.25 && first >= req.start - 0.25;
         const t = absolute ? sample.timestamp - req.start : sample.timestamp;
-        drawReelFrame(ctx, W, H, sampleSource(sample), { mode: req.mode, crop: req.crop, captions: req.captions, style: req.style, t });
+        draw(ctx, sampleSource(sample), t);
         return canvas;
       },
     },
@@ -321,6 +395,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       post({ type: "done" });
     } else if (req.task === "thumbs") await thumbs(req);
     else if (req.task === "export") await exportClip(req);
+    else if (req.task === "anime-export") await exportAnime(req);
+    else if (req.task === "pcm") await pcmRange(req);
   } catch (err) {
     post({ type: "error", message: err instanceof Error ? err.message : String(err) });
   }

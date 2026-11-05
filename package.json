@@ -7,13 +7,14 @@
     "build": "next build",
     "start": "node scripts/start-standalone.mjs",
     "lint": "tsc --noEmit",
-    "postinstall": "node scripts/copy-ffmpeg-core.mjs"
+    "postinstall": "node scripts/copy-ffmpeg-core.mjs && node scripts/copy-kuromoji-dict.mjs"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@huggingface/transformers": "^4.3.1",
     "@mediabunny/aac-encoder": "^1.61.4",
+    "@sglkc/kuromoji": "^1.1.0",
     "mediabunny": "^1.61.4",
     "next": "^16.4.0",
     "openai": "^7.32.0",
