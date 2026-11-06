@@ -9,8 +9,9 @@ import { storageEstimate } from "@/lib/browser/db";
 import type { JobSummary } from "@/lib/types";
 import { ProgressBar, ScoreBadge, StatusDot } from "./ui";
 
-export default function ProjectList() {
-  const jobs = useJobs();
+export default function ProjectList({ kind = "viral" }: { kind?: "viral" | "anime" }) {
+  const all = useJobs();
+  const jobs = all?.filter((j) => (j.settings.kind ?? "viral") === kind) ?? null;
   const [usage, setUsage] = useState<{ usage: number; quota: number } | null>(null);
 
   useEffect(() => {
@@ -33,7 +34,7 @@ export default function ProjectList() {
       )}
       {!jobs.length ? (
         <div className="rounded-xl border border-dashed border-black/15 px-6 py-10 text-center text-sm text-black/50">
-          No projects yet — drop a video above to generate your first reels.
+          {kind === "anime" ? "No anime projects yet — drop a Japanese video above to find its best clips." : "No projects yet — drop a video above to generate your first reels."}
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

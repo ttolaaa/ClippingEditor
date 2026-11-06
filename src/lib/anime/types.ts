@@ -11,6 +11,10 @@ export interface AnimeSubtitle {
   end: number;
   ja: RubySegment[];
   en: string;
+  /** Why this line should be checked by a person (possible mishearing / uncertain translation). Cleared once edited or confirmed. */
+  review?: string;
+  /** Where the English came from: the user's subtitle file, machine translation, or typed by the user. */
+  enSource?: "file" | "machine" | "user";
 }
 
 /**

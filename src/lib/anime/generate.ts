@@ -11,11 +11,72 @@ import type { AnimeSubtitle, BackgroundMode, SubtitleLayout } from "./types";
 export const ANIME_WHISPER_MODELS = {
   tiny: { id: "onnx-community/whisper-tiny_timestamped", label: "Fast", note: "~40 MB · rough Japanese" },
   base: { id: "onnx-community/whisper-base_timestamped", label: "Balanced", note: "~80 MB" },
-  small: { id: "onnx-community/whisper-small_timestamped", label: "Accurate", note: "~250 MB · best Japanese, slower" },
+  small: { id: "onnx-community/whisper-small_timestamped", label: "Accurate", note: "~250 MB · good Japanese, slower" },
+  large: { id: "onnx-community/whisper-large-v3-turbo_timestamped", label: "Best (large)", note: "~720 MB · best Japanese, slowest" },
 } as const;
 export type AnimeWhisperModel = keyof typeof ANIME_WHISPER_MODELS;
 
+/**
+ * Auto mode quality presets: a quick model scans the whole video to find the clips, then the subtitles of the picked
+ * clips are re-transcribed with an accurate model (only minutes of audio, so the slow model stays affordable).
+ */
+export const ANIME_QUALITY = {
+  fast: { label: "Fast", scan: "tiny", subtitles: "base", note: "~120 MB · quickest, rougher subtitles" },
+  balanced: { label: "Balanced", scan: "base", subtitles: "small", note: "~330 MB · accurate subtitles (recommended)" },
+  best: { label: "Best", scan: "base", subtitles: "large", note: "~800 MB · large Whisper for the subtitles, slowest" },
+} as const satisfies Record<string, { label: string; scan: Exclude<AnimeWhisperModel, "large">; subtitles: AnimeWhisperModel; note: string }>;
+export type AnimeQuality = keyof typeof ANIME_QUALITY;
+
 export type Status = (detail: string, progress?: number) => void;
+
+/**
+ * Transcribe Japanese in the given source ranges (seconds) with voice activity detection, one worker so the model loads
+ * once. Returns words with absolute source times, cleaned of Whisper loops/phantom phrases.
+ */
+export async function transcribeRanges(
+  file: Blob,
+  ranges: { start: number; end: number }[],
+  model: AnimeWhisperModel,
+  onStatus: Status,
+): Promise<{ text: string; start: number; end: number }[]> {
+  const total = ranges.reduce((a, r) => a + r.end - r.start, 0) || 1;
+  const worker = new Worker(new URL("../browser/whisper.worker.ts", import.meta.url), { type: "module" });
+  const words: { text: string; start: number; end: number }[] = [];
+  let done = 0;
+  try {
+    for (const r of ranges) {
+      const share = (r.end - r.start) / total;
+      const pcm = await decodeRange(file, r.start, r.end, (f) => onStatus("Decoding audio…", (done + f * 0.05 * share) / 1));
+      const res = await new Promise<{ words: { text: string; start: number; end: number }[] }>((resolve, reject) => {
+        worker.onmessage = (e) => {
+          const m = e.data;
+          if (m.type === "progress") onStatus(m.detail ?? "Recognising Japanese speech…", done + share * (0.05 + 0.95 * m.value));
+          else if (m.type === "done") resolve(m);
+          else if (m.type === "error") reject(new Error(m.message));
+        };
+        worker.onerror = (e) => reject(new Error(e.message || "Speech worker crashed"));
+        worker.postMessage({ pcm, model: ANIME_WHISPER_MODELS[model].id, language: "japanese", vad: true }, [pcm.buffer]);
+      });
+      for (const w of res.words) words.push({ text: w.text, start: w.start + r.start, end: w.end + r.start });
+      done += share;
+    }
+  } finally {
+    worker.terminate();
+  }
+  return normalizeWords(words);
+}
+
+/** Merge padded clip ranges that overlap or nearly touch, so shared audio is transcribed once. */
+export function mergeRanges(ranges: { start: number; end: number }[], pad: number, maxEnd: number) {
+  const sorted = ranges.map((r) => ({ start: Math.max(0, r.start - pad), end: Math.min(maxEnd, r.end + pad) })).sort((a, b) => a.start - b.start);
+  const out: { start: number; end: number }[] = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (last && r.start <= last.end + 2) last.end = Math.max(last.end, r.end);
+    else out.push({ ...r });
+  }
+  return out;
+}
 
 export interface PreparedVideo {
   file: Blob;
@@ -45,7 +106,7 @@ export async function prepareVideo(file: File, onStatus: Status): Promise<Prepar
   return { file: blob, info, converted, audioFallback: !probe.hasAudio && !!probe.audioCodec };
 }
 
-async function decodeRange(file: Blob, start: number, end: number, onProgress: (f: number) => void): Promise<Float32Array> {
+export async function decodeRange(file: Blob, start: number, end: number, onProgress: (f: number) => void): Promise<Float32Array> {
   try {
     const res = await runMediaTask({ task: "pcm", file, start, end }, "pcm", (m) => {
       if (m.type === "progress") onProgress(m.value as number);
@@ -81,21 +142,29 @@ function runWorker<T>(make: () => Worker, message: unknown, transfer: Transferab
   });
 }
 
-async function translateLocal(lines: string[], onStatus: Status): Promise<string[]> {
-  const res = await runWorker<{ translations: string[] }>(
+async function translateLocal(lines: string[], onStatus: Status): Promise<{ en: string[]; uncertain: boolean[] }> {
+  onStatus("Preparing names for translation…", 0);
+  const { protectNames, restoreNames } = await import("./names");
+  const prepared: Awaited<ReturnType<typeof protectNames>>[] = [];
+  for (const l of lines) prepared.push(await protectNames(l));
+  const res = await runWorker<{ translations: string[]; uncertain?: boolean[] }>(
     () => new Worker(new URL("../browser/translate.worker.ts", import.meta.url), { type: "module" }),
-    { lines },
+    { lines: prepared.map((p) => p.text) },
     [],
     (v, d) => onStatus(d ?? "Translating…", v),
   );
-  return res.translations;
+  return { en: res.translations.map((en, i) => restoreNames(en, prepared[i].names)), uncertain: res.uncertain ?? lines.map(() => false) };
 }
 
 const CLOUD_BATCH = 40;
 
 /** Translate Japanese lines to English: cloud GPT when the server allows it, otherwise an on-device model. */
-export async function translateToEnglish(lines: string[], onStatus: Status): Promise<{ translations: string[]; provider: "cloud" | "browser"; note?: string }> {
+export async function translateToEnglish(
+  lines: string[],
+  onStatus: Status,
+): Promise<{ translations: string[]; uncertain: boolean[]; provider: "cloud" | "browser"; note?: string }> {
   const out = lines.map(() => "");
+  const uncertain = lines.map(() => false);
   let note: string | undefined;
   let usedCloud = false;
   const caps = await serverCaps();
@@ -125,9 +194,61 @@ export async function translateToEnglish(lines: string[], onStatus: Status): Pro
       missing.map((i) => lines[i]),
       onStatus,
     );
-    missing.forEach((i, j) => (out[i] = local[j] ?? ""));
+    missing.forEach((i, j) => {
+      out[i] = local.en[j] ?? "";
+      uncertain[i] = local.uncertain[j] ?? !out[i];
+    });
   }
-  return { translations: out, provider: usedCloud && !missing.length ? "cloud" : "browser", note };
+  return { translations: out, uncertain, provider: usedCloud && !missing.length ? "cloud" : "browser", note };
+}
+
+/**
+ * Why a subtitle line deserves a human check, or undefined. Signals: the translation needed a fallback or is empty,
+ * the dictionary doesn't know some of the Japanese words (typical of mishearings), or the quick scan heard something
+ * clearly different at the same moment.
+ */
+export async function reviewReason(
+  line: { text: string; start: number; end: number },
+  en: string,
+  uncertainTranslation: boolean,
+  scanWords?: { text: string; start: number; end: number }[],
+): Promise<string | undefined> {
+  const reasons: string[] = [];
+  if (!en.trim()) reasons.push("no reliable English — please type it");
+  else if (uncertainTranslation) reasons.push("translation was uncertain");
+  try {
+    const { unknownRatio } = await import("./furigana");
+    if ((await unknownRatio(line.text)) > 0.2) reasons.push("some words may be misheard");
+  } catch {
+    // dictionary unavailable: skip this check
+  }
+  if (scanWords && !reasons.some((r) => r.includes("misheard"))) {
+    const scan = scanWords
+      .filter((w) => w.end > line.start - 0.5 && w.start < line.end + 0.5)
+      .map((w) => w.text)
+      .join("");
+    if (similarity(scan, line.text) < 0.25) reasons.push("the two speech passes heard different words");
+  }
+  return reasons.length ? `Check: ${reasons.join("; ")}` : undefined;
+}
+
+/** Character-bigram Dice similarity of two Japanese strings (punctuation ignored), 0..1. */
+export function similarity(a: string, b: string): number {
+  const clean = (s: string) => s.replace(/[\s、。，．,.!！?？…・「」『』\u200B\u3000ー-]/g, "");
+  const grams = (s: string) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) m.set(s.slice(i, i + 2), (m.get(s.slice(i, i + 2)) ?? 0) + 1);
+    return m;
+  };
+  const x = clean(a);
+  const y = clean(b);
+  if (!x || !y) return x === y ? 1 : 0;
+  if (x.length < 2 || y.length < 2) return x.includes(y) || y.includes(x) ? 1 : 0;
+  const gx = grams(x);
+  const gy = grams(y);
+  let common = 0;
+  for (const [g, n] of gx) common += Math.min(n, gy.get(g) ?? 0);
+  return (2 * common) / (x.length - 1 + y.length - 1);
 }
 
 export interface GenerateOptions {
@@ -152,29 +273,43 @@ export async function generateSubtitles(o: GenerateOptions): Promise<GenerateRes
   const warnings: string[] = [];
   const stage = (label: string, from: number, to: number): Status => (detail, p) => o.onStatus(detail || label, p === undefined ? undefined : from + (to - from) * p);
 
-  o.onStatus("Decoding audio…", 0);
-  const pcm = await decodeRange(o.file, o.start, o.end, (f) => o.onStatus("Decoding audio…", f * 0.05));
-  if (pcm.length < 16000 * 0.5) throw new Error("No audio found in the selected range.");
-
-  const words = await runWorker<{ words: { text: string; start: number; end: number }[] }>(
-    () => new Worker(new URL("../browser/whisper.worker.ts", import.meta.url), { type: "module" }),
-    { pcm, model: ANIME_WHISPER_MODELS[o.whisperModel].id, language: "japanese" },
-    [pcm.buffer],
-    (v, d) => stage("Recognising Japanese speech…", 0.05, 0.55)(d ?? "Recognising Japanese speech…", v),
-  );
-  const lines = segmentJapanese(normalizeWords(words.words).map((w) => ({ ...w, start: w.start + o.start, end: w.end + o.start })));
+  const words = await transcribeRanges(o.file, [{ start: o.start, end: o.end }], o.whisperModel, stage("Recognising Japanese speech…", 0, 0.55));
+  const lines = segmentJapanese(words);
   if (!lines.length) throw new Error("No Japanese speech was recognised in this range. Try the Accurate model or a different range.");
 
-  const tr = await translateToEnglish(
-    lines.map((l) => l.text),
-    stage("Translating to English…", 0.55, 0.9),
-  );
-  if (tr.note) warnings.push(tr.note);
+  let tr: { translations: string[]; uncertain: boolean[]; provider: "cloud" | "browser"; note?: string } = {
+    translations: lines.map(() => ""),
+    uncertain: lines.map(() => true),
+    provider: "browser",
+  };
+  try {
+    tr = await translateToEnglish(
+      lines.map((l) => l.text),
+      stage("Translating to English…", 0.55, 0.9),
+    );
+    if (tr.note) warnings.push(tr.note);
+  } catch (e) {
+    // Keep the recognised Japanese even if the translation model can't be loaded (e.g. a network failure).
+    console.error("Translation failed", e);
+    warnings.push(`English translation failed (${(e as Error).message.slice(0, 120)}). The Japanese subtitles were kept; type the English or press Generate again.`);
+  }
 
   o.onStatus("Adding furigana…", 0.9);
   const subtitles: AnimeSubtitle[] = [];
+  let furiganaFailed = false;
   for (let i = 0; i < lines.length; i++) {
-    subtitles.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja: await annotateFurigana(lines[i].text), en: tr.translations[i] ?? "" });
+    let ja: AnimeSubtitle["ja"] = [{ text: lines[i].text }];
+    if (!furiganaFailed) {
+      try {
+        ja = await annotateFurigana(lines[i].text);
+      } catch (e) {
+        furiganaFailed = true;
+        warnings.push(`Furigana could not be added (${(e as Error).message.slice(0, 120)}). Use "Auto furigana" on a line to try again.`);
+      }
+    }
+    const en = tr.translations[i] ?? "";
+    const review = await reviewReason(lines[i], en, tr.uncertain[i] ?? false);
+    subtitles.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja, en, enSource: "machine", ...(review ? { review } : {}) });
     o.onStatus("Adding furigana…", 0.9 + 0.1 * ((i + 1) / lines.length));
   }
   return { subtitles, translationProvider: tr.provider, warnings };

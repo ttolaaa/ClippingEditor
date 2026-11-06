@@ -17,19 +17,22 @@ interface Props extends AnimeRenderOptions {
   end: number;
   subtitles: AnimeSubtitle[];
   className?: string;
+  muted?: boolean;
+  autoPlay?: boolean;
+  loop?: boolean;
   onTime?: (absolute: number) => void;
   onPlayingChange?: (playing: boolean) => void;
 }
 
 /** Live 9:16 preview: plays the source and draws the exact export frame (video + subtitles) on a canvas. */
 const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview(
-  { src, start, end, layout, background, subtitles, className, onTime, onPlayingChange },
+  { src, start, end, layout, background, subtitles, className, muted, autoPlay, loop = false, onTime, onPlayingChange },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const props = useRef({ start, end, layout, background, subtitles, onTime });
-  props.current = { start, end, layout, background, subtitles, onTime };
+  const props = useRef({ start, end, layout, background, subtitles, onTime, loop });
+  props.current = { start, end, layout, background, subtitles, onTime, loop };
 
   const draw = useCallback(() => {
     const v = videoRef.current;
@@ -62,8 +65,11 @@ const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview
       if (v) {
         const p = props.current;
         if (v.currentTime >= p.end - 0.03) {
-          v.pause();
-          v.currentTime = p.start;
+          if (p.loop && !v.paused) v.currentTime = p.start;
+          else {
+            v.pause();
+            v.currentTime = p.start;
+          }
         } else if (!v.paused && v.currentTime < p.start - 0.5) v.currentTime = p.start;
         if (!v.paused) draw();
       }
@@ -90,11 +96,12 @@ const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview
     if (!v) return;
     const reset = () => {
       v.currentTime = start;
+      if (autoPlay) v.play().catch(() => undefined);
     };
     if (v.readyState >= 1) reset();
     else v.addEventListener("loadedmetadata", reset, { once: true });
     return () => v.removeEventListener("loadedmetadata", reset);
-  }, [src, start]);
+  }, [src, start, autoPlay]);
 
   useImperativeHandle(
     ref,
@@ -121,6 +128,7 @@ const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview
       <video
         ref={videoRef}
         src={src}
+        muted={muted}
         playsInline
         preload="auto"
         className="hidden"

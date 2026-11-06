@@ -93,7 +93,13 @@ export default function AnalysisPanel({ job, srcUrl, onOpenClip }: { job: Job; s
             <>
               <Tag tone="success">{analysis.aiProvider === "cloud" ? "On-device + GPT" : "On-device AI"}</Tag>
               <Tag tone={analysis.transcriptProvider === "none" ? "danger" : "neutral"}>
-                {analysis.transcriptProvider === "cloud" ? "Whisper API" : analysis.transcriptProvider === "browser" ? "In-browser Whisper" : "No transcript"}
+                {analysis.transcriptProvider === "cloud"
+                  ? "Whisper API"
+                  : analysis.transcriptProvider === "browser"
+                    ? "In-browser Whisper"
+                    : analysis.transcriptProvider === "file"
+                      ? "Your subtitle file"
+                      : "No transcript"}
               </Tag>
               {job.engine && <Tag>{job.engine}</Tag>}
             </>

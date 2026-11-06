@@ -1,6 +1,7 @@
 import type { ClipRules, FocusType, Moment, PlotTwist, ScoreBreakdown, Transcript } from "../types";
 import { BIN, type Timeline } from "./analysis";
 import { FOCUS_LABEL, keywordRegex } from "./rules";
+import { joinWords } from "./transcript";
 
 export interface Candidate {
   start: number;
@@ -190,7 +191,7 @@ function wordsBetween(words: Transcript["words"], s: number, e: number): string 
   }
   const out: string[] = [];
   for (let i = lo; i < words.length && words[i].start <= e; i++) if (words[i].end <= e + 0.3) out.push(words[i].text);
-  return out.join(" ");
+  return joinWords(out);
 }
 
 function pickClips(
@@ -227,7 +228,7 @@ function pickClips(
   const sortedDurations = [...durations].sort((a, b) => a - b);
   for (const D of sortedDurations) {
     const minLen = D * 0.75;
-    const maxLen = D === 60 ? 60 : D * 1.12;
+    const maxLen = D >= 60 ? D : D * 1.12;
     if (winEnd - winStart < minLen) continue;
     const cands: Candidate[] = [];
     for (const s of starts) {
@@ -363,15 +364,12 @@ function keywords(text: string, n: number): string[] {
 }
 
 export function clipText(transcript: Transcript, s: number, e: number) {
-  return transcript.words
-    .filter((w) => w.start >= s - 0.05 && w.end <= e + 0.3)
-    .map((w) => w.text)
-    .join(" ");
+  return joinWords(transcript.words.filter((w) => w.start >= s - 0.05 && w.end <= e + 0.3).map((w) => w.text));
 }
 
 export function heuristicMeta(c: Candidate, transcript: Transcript, index: number, usedTitles: Set<string> = new Set()): ClipMeta {
   const text = clipText(transcript, c.start, c.end);
-  const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 3);
+  const sentences = text.split(/(?<=[.!?])\s+|(?<=[。！？])/).filter((s) => s.length > 3);
   const tagHash: Record<string, string> = {
     "plot twist": "#plottwist",
     funny: "#funny",

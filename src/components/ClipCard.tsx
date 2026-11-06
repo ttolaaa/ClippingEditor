@@ -6,6 +6,7 @@ import { formatTime } from "@/lib/captions";
 import { cx } from "@/lib/client";
 import { useBlobUrl } from "@/lib/browser/store";
 import ReelPlayer from "./ReelPlayer";
+import AnimePreview from "./AnimePreview";
 import { ProgressBar, ScoreRing, StatusDot, Tag, tagTone } from "./ui";
 
 export default function ClipCard({
@@ -41,7 +42,21 @@ export default function ClipCard({
               // eslint-disable-next-line @next/next/no-img-element
               <img src={thumb} alt="" className="absolute inset-0 h-full w-full object-cover" />
             )}
-            {hover && srcUrl && (
+            {hover && srcUrl && clip.anime && (
+              <AnimePreview
+                src={srcUrl}
+                start={clip.start}
+                end={clip.end}
+                layout={clip.anime.layout}
+                background={clip.anime.background}
+                subtitles={clip.anime.subtitles}
+                muted
+                autoPlay
+                loop
+                className="absolute inset-0 h-full w-full"
+              />
+            )}
+            {hover && srcUrl && !clip.anime && (
               <ReelPlayer
                 src={srcUrl}
                 start={clip.start}
@@ -102,6 +117,11 @@ export default function ClipCard({
           <span>· {clip.targetDuration}s reel</span>
         </div>
         <h3 className="line-clamp-2 font-semibold leading-snug">{clip.title}</h3>
+        {!!clip.anime?.subtitles.some((s) => s.review) && (
+          <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-full bg-amber-400 px-2 py-0.5 text-[11px] font-semibold text-amber-950">
+            ⚠ {clip.anime.subtitles.filter((s) => s.review).length} subtitle line{clip.anime.subtitles.filter((s) => s.review).length === 1 ? "" : "s"} to review
+          </p>
+        )}
         {!!clip.ruleMatches?.length && (
           <div className="mt-2 flex flex-wrap gap-1" title="Clipping rules this clip matched">
             {clip.ruleMatches.slice(0, 3).map((m) => (
@@ -124,7 +144,7 @@ export default function ClipCard({
             disabled={!ready}
             className="flex-1 rounded-full border border-black/15 px-3 py-2 text-sm font-medium transition hover:border-black disabled:opacity-40"
           >
-            Edit captions
+            {clip.anime ? "Edit subtitles" : "Edit captions"}
           </button>
           <button
             onClick={onDownload}

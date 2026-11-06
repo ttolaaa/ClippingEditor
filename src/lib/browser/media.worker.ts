@@ -44,7 +44,13 @@ export interface ProbeInfo {
 export type WorkerRequest =
   | { task: "probe"; file: Blob }
   | { task: "analyze"; file: Blob; info: ProbeInfo }
-  | { task: "thumbs"; file: Blob; width: number; height: number; items: { key: string; time: number; rel: number; crop: CropPath; mode: ReframeMode }[] }
+  | {
+      task: "thumbs";
+      file: Blob;
+      width: number;
+      height: number;
+      items: { key: string; time: number; rel: number; crop: CropPath; mode: ReframeMode; anime?: AnimeRenderOptions & { subtitles: AnimeSubtitle[] } }[];
+    }
   | {
       task: "export";
       file: Blob;
@@ -212,7 +218,8 @@ async function thumbs(req: Extract<WorkerRequest, { task: "thumbs" }>) {
     for await (const sample of sink.samplesAtTimestamps(req.items.map((it) => it.time))) {
       const item = req.items[i++];
       if (!sample) continue;
-      drawReelFrame(ctx, req.width, req.height, sampleSource(sample), { mode: item.mode, crop: item.crop, captions: [], style: noCaptions, t: item.rel });
+      if (item.anime) drawAnimeFrame(ctx, req.width, req.height, sampleSource(sample), { ...item.anime, t: item.time });
+      else drawReelFrame(ctx, req.width, req.height, sampleSource(sample), { mode: item.mode, crop: item.crop, captions: [], style: noCaptions, t: item.rel });
       sample.close();
       results.push({ key: item.key, blob: await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 }) });
       post({ type: "progress", stage: "thumbs", value: i / req.items.length });

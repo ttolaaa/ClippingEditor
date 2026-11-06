@@ -116,11 +116,24 @@ const LEXICON: Record<LexKey, RegExp[]> = {
   ],
 };
 
+// Japanese cues (anime / J-drama dialogue). Matched against text joined without spaces, so no word boundaries.
+const JA_LEXICON: Record<LexKey, RegExp[]> = {
+  twist: [/まさか/, /実は/, /本当は/, /嘘だろ|嘘でしょ|うそだろ|うそでしょ/, /正体/, /裏切/, /秘密/, /気づ/, /知らなかった/, /そんな(はず|バカ|ばか)/, /ありえない|あり得ない/, /最初から/],
+  funny: [/[wｗ]{2,}/, /\(笑\)|（笑）/, /(あは|はは|ぷっ|わはは|うけ)/, /面白/, /バカ|ばか|アホ|あほ/, /冗談/, /何それ|なにそれ/, /ふざけ/],
+  emotional: [/好き/, /愛し/, /泣/, /涙/, /寂し|さみし/, /ごめん/, /ありがとう/, /守る|守って/, /死/, /怖い|こわい/, /悲し/, /家族/, /母さん|父さん|お母|お父/, /仲間/, /約束/, /大切/, /会いたい/, /忘れ/],
+  excite: [/すごい|すげ|凄/, /やば|ヤバ/, /マジ/, /信じられない/, /最強/, /最高/, /行くぞ|いくぞ|いけ[ぇー！!]/, /うお+/, /負けない|勝つ/, /本気/, /覚悟/],
+  hook: [/[？?]$/, /^(なぜ|なんで|どうして|聞いて|見て|知って)/, /実は/, /誰にも/, /絶対/],
+  insight: [/大事な|大切なのは/, /覚えて/, /教えて/, /理由/, /方法/, /コツ/, /意味/],
+};
+
+const JA_TEXT = /[\u3040-\u30ff\u3400-\u9fff]/;
+
 function lexScore(text: string, key: LexKey): number {
   const t = text.toLowerCase().trim();
   let hits = 0;
   for (const re of LEXICON[key]) if (re.test(t)) hits++;
-  if (key === "excite") hits += Math.min(2, (text.match(/!/g) ?? []).length);
+  if (JA_TEXT.test(t)) for (const re of JA_LEXICON[key]) if (re.test(t)) hits++;
+  if (key === "excite") hits += Math.min(2, (text.match(/[!！]/g) ?? []).length);
   return Math.min(1, hits * 0.45);
 }
 

@@ -53,7 +53,7 @@ export default function Home() {
 
       <section className="mt-14">
         <h2 className="mb-4 text-xl font-bold tracking-tight">Your projects</h2>
-        <ProjectList />
+        <ProjectList kind="viral" />
       </section>
     </div>
   );

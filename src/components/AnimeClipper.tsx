@@ -4,27 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cx, formatBytes, slugify } from "@/lib/client";
 import { ProgressBar } from "@/components/ui";
 import AnimePreview, { type AnimePreviewHandle } from "@/components/AnimePreview";
-import { SUBTITLE_LAYOUTS, type AnimeSubtitle, type BackgroundMode, type RubySegment, type SubtitleLayout } from "@/lib/anime/types";
-import { parseMarkup, segmentsToMarkup, segmentsToText } from "@/lib/anime/ruby";
+import { type AnimeSubtitle, type BackgroundMode, type SubtitleLayout } from "@/lib/anime/types";
 import { annotateFurigana } from "@/lib/anime/furigana";
 import { formatTime, newSubtitleId, parseSubtitleFile, parseTime, sortSubtitles, toSubtitleFile } from "@/lib/anime/subtitles";
 import { ANIME_WHISPER_MODELS, exportAnimeVideo, generateSubtitles, prepareVideo, type AnimeWhisperModel, type PreparedVideo } from "@/lib/anime/generate";
+import { Chip, LayoutPicker, SubtitleRow, downloadBlob as download } from "@/components/AnimeControls";
 
 type Phase = { kind: "idle" } | { kind: "preparing" | "generating" | "exporting"; detail: string; progress?: number };
 
-const ACCEPT = "video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi";
+export const ANIME_ACCEPT = "video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi";
+const ACCEPT = ANIME_ACCEPT;
 
-function download(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
-
+/** Manual mode: you pick one time range; subtitles are generated for that range only. */
 export default function AnimeClipper() {
   const [file, setFile] = useState<File | null>(null);
   const [video, setVideo] = useState<PreparedVideo | null>(null);
@@ -33,7 +24,7 @@ export default function AnimeClipper() {
   const [endText, setEndText] = useState("0:00");
   const [layout, setLayout] = useState<SubtitleLayout>("both");
   const [background, setBackground] = useState<BackgroundMode>("blur");
-  const [model, setModel] = useState<AnimeWhisperModel>("base");
+  const [model, setModel] = useState<AnimeWhisperModel>("small");
   const [subs, setSubs] = useState<AnimeSubtitle[]>([]);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +41,8 @@ export default function AnimeClipper() {
   const duration = video?.info.duration ?? 0;
   const startParsed = parseTime(startText);
   const endParsed = parseTime(endText);
-  const rangeOk = startParsed !== null && endParsed !== null && startParsed >= 0 && endParsed > startParsed + 0.5 && endParsed <= duration + 0.05;
+  // Times are typed to whole/tenth seconds, so allow an End up to 1 s past the real end (it is clamped below).
+  const rangeOk = startParsed !== null && endParsed !== null && startParsed >= 0 && endParsed > startParsed + 0.5 && endParsed <= duration + 1 && startParsed < duration - 0.5;
   const start = rangeOk ? startParsed : 0;
   const end = rangeOk ? Math.min(endParsed, duration) : duration;
   const busy = phase.kind !== "idle";
@@ -78,7 +70,7 @@ export default function AnimeClipper() {
       const v = await prepareVideo(f, (detail, progress) => setPhase({ kind: "preparing", detail, progress }));
       setVideo(v);
       setStartText("0:00");
-      setEndText(formatTime(Math.min(v.info.duration, 60), 0));
+      setEndText(formatTime(Math.floor(Math.min(v.info.duration, 60) * 10) / 10, 1));
       if (v.converted) setNotes(["This format isn't playable in browsers, so it was converted to MP4 on your device."]);
       if (!v.info.hasAudio) setNotes((n) => [...n, "This video has no audio track, so speech can't be recognised. You can still type or import subtitles."]);
     } catch (e) {
@@ -148,12 +140,58 @@ export default function AnimeClipper() {
     if (!f) return;
     setError(null);
     try {
-      const raw = JSON.parse(await f.text());
-      const imported = await parseSubtitleFile(raw, annotateFurigana);
-      setSubs(imported);
-      setNotes([`Imported ${imported.length} subtitles.`]);
+      // The app's own JSON keeps furigana, English and flags exactly.
+      if (/\.json$/i.test(f.name)) {
+        try {
+          const imported = await parseSubtitleFile(JSON.parse(await f.text()), annotateFurigana);
+          setSubs(imported);
+          setNotes([`Imported ${imported.length} subtitles.`]);
+          return;
+        } catch {
+          // not the app's format: fall through to the generic subtitle parser
+        }
+      }
+      const { readSubtitleFile, detectCueLanguage, cuesFor } = await import("@/lib/anime/subfile");
+      const cues = await readSubtitleFile(f);
+      if (detectCueLanguage(cues) === "en") {
+        // English file: fill the English of existing lines (or create English-only lines when there are none yet).
+        if (subs.length) {
+          let matched = 0;
+          setSubs((cur) =>
+            cur.map((s) => {
+              const en = cuesFor(cues, s.start, s.end);
+              if (!en) return s;
+              matched++;
+              return { ...s, en, enSource: "file", review: undefined };
+            }),
+          );
+          setNotes([`English from ${f.name} matched ${matched} of ${subs.length} lines.`]);
+        } else {
+          setSubs(sortSubtitles(cues.map((c) => ({ id: newSubtitleId(), start: c.start, end: c.end, ja: [], en: c.text, enSource: "file" as const }))));
+          setNotes([`Imported ${cues.length} English lines. Add a Japanese file or Generate to get the Japanese.`]);
+        }
+        return;
+      }
+      // Japanese file: exact Japanese lines → furigana, English from machine translation (labelled).
+      setPhase({ kind: "generating", detail: "Adding furigana and translating your Japanese subtitles…", progress: 0 });
+      const { translateToEnglish } = await import("@/lib/anime/generate");
+      const tr = await translateToEnglish(
+        cues.map((c) => c.text),
+        (detail, progress) => setPhase({ kind: "generating", detail, progress: progress === undefined ? undefined : progress * 0.8 }),
+      ).catch(() => ({ translations: cues.map(() => ""), uncertain: cues.map(() => true), provider: "browser" as const, note: "Translation failed — type the English." }));
+      const next: AnimeSubtitle[] = [];
+      for (let i = 0; i < cues.length; i++) {
+        const en = tr.translations[i] ?? "";
+        const review = !en ? "Check: no reliable English — please type it" : tr.uncertain[i] ? "Check: translation was uncertain" : undefined;
+        next.push({ id: newSubtitleId(), start: cues[i].start, end: cues[i].end, ja: await annotateFurigana(cues[i].text).catch(() => [{ text: cues[i].text }]), en, enSource: "machine", ...(review ? { review } : {}) });
+        setPhase({ kind: "generating", detail: "Adding furigana…", progress: 0.8 + 0.2 * ((i + 1) / cues.length) });
+      }
+      setSubs(sortSubtitles(next));
+      setNotes([`Imported ${cues.length} Japanese lines from ${f.name}. English is machine-translated; add an English subtitle file for exact English.`, ...(tr.note ? [tr.note] : [])]);
     } catch (e) {
       setError(`Couldn't import subtitles: ${(e as Error).message}`);
+    } finally {
+      setPhase({ kind: "idle" });
     }
   };
 
@@ -168,20 +206,7 @@ export default function AnimeClipper() {
   const inRange = subs.filter((s) => s.end > start && s.start < end).length;
 
   return (
-    <div className="mx-auto max-w-7xl px-5 pb-24 pt-10">
-      <div className="mb-8">
-        <p className="mb-3 inline-flex items-center gap-2 rounded-full border border-black/10 px-3 py-1 text-xs font-medium text-black/60">
-          <span className="h-1.5 w-1.5 rounded-full bg-accent" /> Anime Clipper · Japanese → furigana + English
-        </p>
-        <h1 className="text-4xl font-black tracking-tight sm:text-5xl">
-          Anime clips with <span className="text-accent">furigana</span> &amp; English subtitles.
-        </h1>
-        <p className="mt-3 max-w-2xl text-black/60">
-          Pick a time range, let the app listen to the Japanese, translate it and add furigana, then export a 1080×1920 Reel. The original video keeps its aspect
-          ratio and subtitles fill the space below it. Everything runs in your browser.
-        </p>
-      </div>
-
+    <div>
       <div className="grid gap-8 lg:grid-cols-[minmax(0,360px)_1fr]">
         <div className="lg:sticky lg:top-20 lg:self-start">
           <div className="mx-auto w-full max-w-[340px] overflow-hidden rounded-[28px] border-[6px] border-ink bg-ink shadow-xl">
@@ -301,34 +326,7 @@ export default function AnimeClipper() {
           </Card>
 
           <Card step={3} title="Subtitle layout" disabled={!video}>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {SUBTITLE_LAYOUTS.map((o) => (
-                <button
-                  key={o.id}
-                  type="button"
-                  onClick={() => setLayout(o.id)}
-                  className={cx("flex items-center gap-3 rounded-xl border p-3 text-left transition", layout === o.id ? "border-ink bg-ink/[0.03] ring-1 ring-ink" : "border-black/15 hover:border-black/40")}
-                >
-                  <LayoutGlyph layout={o.id} active={layout === o.id} />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold">
-                      <span className="mr-1.5 text-accent">{o.letter}</span>
-                      {o.label}
-                    </span>
-                    <span className="block text-xs text-black/50">{o.hint}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-black/45">Letterbox fill</span>
-              <Chip active={background === "blur"} onClick={() => setBackground("blur")}>
-                Blurred video
-              </Chip>
-              <Chip active={background === "dark"} onClick={() => setBackground("dark")}>
-                Solid dark
-              </Chip>
-            </div>
+            <LayoutPicker layout={layout} background={background} onLayout={setLayout} onBackground={setBackground} />
           </Card>
 
           <Card step={4} title="Subtitles" disabled={!video}>
@@ -353,12 +351,12 @@ export default function AnimeClipper() {
                 + Add line at playhead
               </button>
               <button type="button" disabled={busy} onClick={() => jsonPicker.current?.click()} className="rounded-full border border-black/15 px-4 py-2 text-sm font-medium hover:border-black disabled:opacity-40">
-                Import JSON
+                Import subtitles
               </button>
               <input
                 ref={jsonPicker}
                 type="file"
-                accept="application/json,.json"
+                accept=".json,.srt,.vtt,.ass,.ssa,.txt,application/json,text/plain,text/vtt"
                 className="hidden"
                 onChange={(e) => {
                   importJson(e.target.files?.[0]);
@@ -373,6 +371,11 @@ export default function AnimeClipper() {
               Japanese speech is recognised, translated to English and given furigana automatically. The first run downloads the speech model, translation model and
               furigana dictionary once; they are cached afterwards.
             </p>
+            {video && !busy && (!rangeOk || !video.info.hasAudio) && (
+              <p className="mt-2 text-xs font-medium text-danger">
+                {!video.info.hasAudio ? "Generate is unavailable: this video has no audio track." : "Generate is unavailable: fix the clip range above (start before end, within the video)."}
+              </p>
+            )}
             {phase.kind === "generating" && <Progress phase={phase} />}
 
             {subs.length > 0 && (
@@ -430,7 +433,7 @@ export default function AnimeClipper() {
   );
 }
 
-function Card({ step, title, disabled, children }: { step: number; title: string; disabled?: boolean; children: React.ReactNode }) {
+export function Card({ step, title, disabled, children }: { step: number; title: string; disabled?: boolean; children: React.ReactNode }) {
   return (
     <section className={cx("rounded-2xl border border-black/10 bg-white p-5 shadow-[0_1px_0_rgba(0,0,0,0.04)] transition", disabled && "opacity-50")}>
       <h2 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-black/70">
@@ -439,19 +442,6 @@ function Card({ step, title, disabled, children }: { step: number; title: string
       </h2>
       <div className={disabled ? "pointer-events-none" : undefined}>{children}</div>
     </section>
-  );
-}
-
-function Chip({ active, onClick, children, title }: { active: boolean; onClick: () => void; children: React.ReactNode; title?: string }) {
-  return (
-    <button
-      type="button"
-      title={title}
-      onClick={onClick}
-      className={cx("rounded-full border px-3.5 py-1.5 text-sm font-medium transition", active ? "border-ink bg-ink text-white" : "border-black/15 hover:border-black/40")}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -485,130 +475,5 @@ function TimeField({ label, value, onChange, onUsePlayhead }: { label: string; v
         </button>
       </div>
     </label>
-  );
-}
-
-function LayoutGlyph({ layout, active }: { layout: SubtitleLayout; active: boolean }) {
-  const ja = (
-    <div key="ja" className="flex flex-col items-center leading-none">
-      <span className="text-[6px] text-amber-500">にほん</span>
-      <span className="text-[9px] font-bold">日本語</span>
-    </div>
-  );
-  const en = (
-    <span key="en" className="text-[8px] font-semibold text-sky-600">
-      English
-    </span>
-  );
-  const rows = layout === "both" ? [ja, en] : layout === "ja" ? [ja] : layout === "en" ? [en] : [en, ja];
-  return (
-    <span className={cx("flex h-16 w-10 shrink-0 flex-col items-center justify-end gap-1 rounded-md border pb-1.5", active ? "border-ink bg-white" : "border-black/15 bg-black/[0.03]")}>
-      <span className="mb-auto mt-1.5 h-4 w-7 rounded-sm bg-black/15" />
-      {rows}
-    </span>
-  );
-}
-
-function Ruby({ segs }: { segs: RubySegment[] }) {
-  return (
-    <span className="text-base leading-[2.1]">
-      {segs.map((s, i) =>
-        s.ruby ? (
-          <ruby key={i}>
-            {s.text}
-            <rt className="text-[9px] text-amber-600">{s.ruby}</rt>
-          </ruby>
-        ) : (
-          <span key={i}>{s.text}</span>
-        ),
-      )}
-    </span>
-  );
-}
-
-function SubtitleRow({
-  sub,
-  active,
-  outside,
-  onChange,
-  onDelete,
-  onSeek,
-}: {
-  sub: AnimeSubtitle;
-  active: boolean;
-  outside: boolean;
-  onChange: (s: AnimeSubtitle) => void;
-  onDelete: () => void;
-  onSeek: () => void;
-}) {
-  const [markup, setMarkup] = useState(() => segmentsToMarkup(sub.ja));
-  const [from, setFrom] = useState(() => formatTime(sub.start, 2));
-  const [to, setTo] = useState(() => formatTime(sub.end, 2));
-  const [working, setWorking] = useState(false);
-  const [furiganaError, setFuriganaError] = useState<string | null>(null);
-
-  useEffect(() => setMarkup(segmentsToMarkup(sub.ja)), [sub.ja]);
-  useEffect(() => setFrom(formatTime(sub.start, 2)), [sub.start]);
-  useEffect(() => setTo(formatTime(sub.end, 2)), [sub.end]);
-
-  const commitTimes = () => {
-    const s = parseTime(from);
-    const e = parseTime(to);
-    if (s !== null && e !== null && e > s) onChange({ ...sub, start: s, end: e });
-    else {
-      setFrom(formatTime(sub.start, 2));
-      setTo(formatTime(sub.end, 2));
-    }
-  };
-
-  const reannotate = async () => {
-    setWorking(true);
-    setFuriganaError(null);
-    try {
-      const plain = segmentsToText(parseMarkup(markup));
-      onChange({ ...sub, ja: await annotateFurigana(plain) });
-    } catch (e) {
-      setFuriganaError((e as Error).message);
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  const small = "rounded-md border border-black/15 bg-white px-2 py-1 text-xs tabular-nums outline-none focus:border-black";
-  return (
-    <li className={cx("rounded-xl border p-3 transition", active ? "border-accent bg-accent/5" : "border-black/10", outside && "opacity-50")}>
-      <div className="flex flex-wrap items-center gap-2">
-        <input value={from} onChange={(e) => setFrom(e.target.value)} onBlur={commitTimes} className={cx(small, "w-20")} aria-label="Start" />
-        <span className="text-black/30">→</span>
-        <input value={to} onChange={(e) => setTo(e.target.value)} onBlur={commitTimes} className={cx(small, "w-20")} aria-label="End" />
-        <button type="button" onClick={onSeek} className="rounded-md px-2 py-1 text-xs text-black/55 hover:bg-black/5 hover:text-black">
-          ▶ Go to
-        </button>
-        <button type="button" onClick={reannotate} disabled={working} className="rounded-md px-2 py-1 text-xs text-black/55 hover:bg-black/5 hover:text-black disabled:opacity-50">
-          {working ? "Adding furigana…" : "↻ Auto furigana"}
-        </button>
-        <button type="button" onClick={onDelete} className="ml-auto rounded-md px-2 py-1 text-xs text-danger hover:bg-danger/10">
-          Delete
-        </button>
-      </div>
-      <div className="mt-2 grid gap-2">
-        <input
-          value={markup}
-          onChange={(e) => setMarkup(e.target.value)}
-          onBlur={() => onChange({ ...sub, ja: parseMarkup(markup) })}
-          placeholder="日本語 (ruby markup allowed)"
-          lang="ja"
-          className="w-full rounded-md border border-black/15 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-black"
-        />
-        {sub.ja.length > 0 && <Ruby segs={parseMarkup(markup)} />}
-        <input
-          value={sub.en}
-          onChange={(e) => onChange({ ...sub, en: e.target.value })}
-          placeholder="English translation"
-          className="w-full rounded-md border border-black/15 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-black"
-        />
-        {furiganaError && <p className="text-xs text-danger">Furigana failed: {furiganaError}</p>}
-      </div>
-    </li>
   );
 }

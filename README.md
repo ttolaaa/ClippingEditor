@@ -1,6 +1,8 @@
 # Clipping: AI viral reels from long videos
 
 > **Turn one long video into a stack of ready-to-post TikTok, Instagram Reels, YouTube Shorts and Facebook Reels clips. Everything runs in your browser.**
+>
+> 🎌 **New: Anime Clipper.** Clip Japanese videos into Reels with **furigana** and an automatic **English translation**. See [Anime Clipper](#anime-clipper).
 
 ![Clipping: ranked, captioned 9:16 reels generated from one long video](docs/screenshots/03-clips.png)
 
@@ -117,6 +119,8 @@ Click **Edit captions** on any reel to open the editor. Every change shows insta
 
 Click **Download 1080×1920 MP4**, either in the editor or on a clip card. The reel is rendered in your browser and saved to your Downloads folder, ready to upload to TikTok, Reels, Shorts or Facebook.
 
+To get every reel at once, click **Download all (.zip)** at the top of the project page. The clips are rendered one after another (with overall progress and a **Cancel** button) and saved together as a single ZIP, e.g. `my-video-8-reels.zip`, so the browser doesn't ask to allow multiple downloads. If a length filter is active (for example **30s**), the button says **Download N shown** and only those clips are included.
+
 ### Tips
 
 - Videos where **people talk** (podcasts, interviews, storytimes, vlogs) give the best results, because the AI reads the speech for hooks and twists.
@@ -127,38 +131,168 @@ Click **Download 1080×1920 MP4**, either in the editor or on a clip card. The r
 
 ## Anime Clipper
 
-Open **Anime Clipper** from the switch in the header (`/anime`). It turns a time range of an anime (or any Japanese-language video) into a 1080×1920 Reel with **Japanese + furigana** and an **English translation**. Like the rest of the app it runs in your browser; nothing is uploaded.
+Open **Anime Clipper** from the switch in the header (`/anime`). Drop an anime episode (or any Japanese-language video) and it **finds the most viral moments automatically**, cuts them into ranked 30-second, 60-second and 2-minute Reels, and subtitles each one with **Japanese + furigana** and an **English translation**. Like the rest of the app it runs in your browser; nothing is uploaded.
 
-1. **Video:** drop a landscape or portrait video. Formats the browser can't play (AVI, MKV…) are converted on-device.
-2. **Clip range:** type a start and end (`m:ss`), or move the playhead and press **Use playhead**.
-3. **Subtitle layout:**
+It has two modes, switchable at the top of the page:
 
-   | Option | Result |
+| | **Auto viral clips** (default) | **Manual range** |
+| --- | --- | --- |
+| Picks the clips | The app analyses the whole video and ranks the best moments by viral score | You choose one exact time range |
+| Clip lengths | 30s, 60s and/or 2 min, several per length | Whatever range you type |
+| Subtitles | Generated for every clip | Generated for your range |
+| Saved | Yes, as a project in this browser (listed under **Your anime projects**) | No: download the subtitle JSON to keep your edits |
+
+Compared with the Viral Clipper, the frame is **never cropped** (the whole picture is kept, centred in 9:16), and captions are bilingual subtitles rather than word-by-word captions.
+
+### Auto viral clips, step by step
+
+1. **Drop a video:** landscape or portrait. Formats the browser can't play (AVI, MKV…) are converted on-device.
+2. **Pick your settings:**
+
+   | Setting | What it does |
    | --- | --- |
-   | **A** Japanese + English | Japanese with furigana on top, English below |
-   | **B** Japanese only | Japanese with furigana |
-   | **C** English only | English translation |
-   | **D** English + Japanese | English on top, Japanese with furigana below |
+   | **Clip lengths** | 30s, 60s and/or 2 min. A 2-minute reel needs a video of at least about 1.5 minutes. |
+   | **Clips per length** | How many reels to make for each length (1–6). |
+   | **Japanese speech recognition** | **Fast**, **Balanced** (default) or **Best**; see [Speech recognition quality](#speech-recognition-quality). |
+   | **Subtitle / transcript files** (optional) | Your Japanese and/or English subtitle files. **The most accurate option**; see [Using your own subtitle files](#using-your-own-subtitle-files). |
+   | **Default subtitle layout** | A, B, C or D, plus blurred or dark fill. You can change it per clip later. |
+3. **Find viral anime clips.** You're taken to the project page, which shows live progress: reading the video, decoding audio, **transcribing the Japanese**, scene tracking, **detecting viral moments & plot twists** (Japanese cues such as まさか, 実は, すごい, 泣, ありがとう, laughter, shouting and scene energy), ranking, then **translating & adding furigana** for the lines inside the picked clips. Keep the tab open while it works.
+4. **Browse the reels:** ranked by viral score, with filters for each length and for plot twists. Hover a card for a live preview with subtitles. Titles come from the English translation.
+5. **Edit subtitles:** opens the clip editor with a live preview, the layout picker (A–D and the fill), and every subtitle line (see [Editing subtitles](#editing-subtitles)). Edits save automatically in this browser.
+6. **Download 1080×1920 MP4** on a card or in the editor, or **Download all (.zip)** at the top of the project to get every reel in one file.
 
-   **Letterbox fill** is either a blurred copy of the video or a solid dark colour.
-4. **Subtitles:** press **Generate**. Japanese speech is recognised (Whisper, language fixed to Japanese), **translated to English automatically**, and given furigana. Every line is editable (times, Japanese with ruby markup, English), and you can add lines, re-run **Auto furigana** on a line, or **Import / Download JSON**.
-5. **Export:** **Download 1080×1920 MP4** renders the video with the subtitles burned in.
+How long it takes: only the parts of the video with speech are transcribed (music and silence are skipped), and only the picked clips get the slower, accurate second pass. The first run also downloads the models once.
 
-**Layout rules.** The source is never cropped or stretched: it keeps its aspect ratio and is centred in the 9:16 canvas. Landscape sources leave a large band below the video, and the subtitles use that band (ruby text sits directly above its kanji and is never overlapped by the neighbouring text). Portrait or very tall sources have little or no margin, so they are scaled down just enough to free a subtitle band (about a quarter of the height). A small area at the very bottom is kept clear of the Reels/Shorts UI.
+### Manual range, step by step
 
-**How the subtitles are made**
+1. **Video:** drop a landscape or portrait video.
+2. **Clip range:** type a start and end (`m:ss`, `m:ss.s` or plain seconds), or move the playhead and press **Use playhead**.
+3. **Subtitle layout:** pick A–D and the fill (see below).
+4. **Subtitles:** pick a speech model (**Accurate** is the default), then press **Generate Japanese + furigana + English**. Or press **Import subtitles** to load a subtitle file (.srt, .vtt, .ass/.ssa, timestamped .txt or the app's JSON): a Japanese file gives exact Japanese lines (with furigana and machine-translated English), and an English file fills in the English of the matching lines.
+5. **Review and edit**, then **Download 1080×1920 MP4**.
+
+> ⚠️ Manual mode keeps your work in the open tab only. Reloading or leaving the page clears it, so use **Download JSON** if you want to come back to your edits.
+
+### Using your own subtitle files
+
+Speech recognition and on-device translation can't be perfect (see below). If you have the video's subtitles, add them, either when you start an auto project (**Subtitle / transcript files**) or later on the project page (**Import subtitles** → **Rebuild clip subtitles**).
+
+| You add | Japanese comes from | English comes from |
+| --- | --- | --- |
+| Japanese + English files | your Japanese file (**exact**) | your English file (**exact**) |
+| Japanese file only | your Japanese file (**exact**) | machine translation, labelled *machine translation — check it before posting* |
+| English file only | speech recognition | your English file where it has a line at that moment, machine translation elsewhere |
+| Nothing | speech recognition | machine translation |
+
+- **Formats:** `.srt`, `.vtt`, `.ass`/`.ssa` (sign and karaoke lines are skipped), text lines starting with a time (`[01:23] …`), and the app's subtitle JSON. Styling tags are removed.
+- **Encodings:** UTF-8, UTF-16 and the Japanese encodings Shift_JIS / EUC-JP are detected automatically.
+- **Language:** detected automatically per file (Japanese or English). You can change it in the list.
+- **Offset:** if a file is timed for a slightly different release of the video (lines appear early or late), set the offset in seconds (e.g. `-1.5`).
+- **Matching:** English lines are matched to Japanese lines by time overlap.
+- With a Japanese file, **speech recognition is skipped entirely**, so processing is much faster. In testing, a 3-minute video finished in about 11 seconds. Clips are picked using the exact text.
+- Each line in the clip editor says where its English came from: *from your subtitle file*, *machine translation*, or *edited by you*.
+
+**For every English line to be correct, add an English subtitle file.** The on-device translator is small. In testing on *Grave of the Fireflies*, both it and the larger FuguMT model mistranslated some lines even with perfect Japanese input (for example 死にはったんか, "She passed away?", came out as "Did you die?"), mostly because of Kansai dialect and missing context.
+
+### Subtitle layouts
+
+| Option | Result |
+| --- | --- |
+| **A** Japanese + English | Japanese with furigana on top, English below |
+| **B** Japanese only | Japanese with furigana |
+| **C** English only | English translation |
+| **D** English + Japanese | English on top, Japanese with furigana below |
+
+**Letterbox fill** is either a blurred copy of the video or a solid dark colour.
+
+### Speech recognition quality
+
+Auto mode works in two passes: a quick model scans the whole video to find the best moments, then **only the picked clips are re-transcribed with an accurate model** for the subtitles (minutes of audio instead of the whole film).
+
+| Preset (auto mode) | Scan / subtitles | Download (once) | Best for |
+| --- | --- | --- | --- |
+| **Fast** | Whisper tiny / base | ~120 MB | Quick drafts; rougher subtitles |
+| **Balanced** (default) | Whisper base / small | ~330 MB | Accurate subtitles at a reasonable speed |
+| **Best** | Whisper base / **large-v3-turbo** | ~800 MB | The most accurate Japanese the browser can do; slowest |
+
+Manual mode transcribes one range with the model you pick: **Fast** (tiny), **Balanced** (base), **Accurate** (small, default) or **Best (large)** (large-v3-turbo, 4-bit, ~720 MB).
+
+The first run also downloads the voice detector (~2 MB), the translation model (~110 MB) and the furigana dictionary (~18 MB); after that everything is cached. Model downloads retry automatically if the network drops.
+
+Speech recognition runs on the CPU (multi-threaded WebAssembly). On computers with an NVIDIA, AMD or Apple GPU it runs on the GPU via WebGPU instead, and falls back to the CPU automatically if anything goes wrong. On integrated Intel graphics the GPU measured no faster than the CPU and needs a larger second download, so those machines stay on the CPU.
+
+#### How the Japanese is kept accurate
+
+Whisper (the speech model) **invents text when it hears music, sound effects or silence**. On a feature film that is most of the runtime, and it shows up as loops like "さて、さて、さて…" or "もう一度、もう一度…" and phantom lines like "ご視聴ありがとうございました". The app guards against this in layers:
+
+1. **Voice activity detection** ([Silero VAD](https://github.com/snakers4/silero-vad), runs in the browser): only stretches that contain speech are sent to Whisper. In testing on a film, speech was 15–30 % of the audio, so this also makes transcription several times faster.
+2. **A token cap per speech window**, so a runaway loop can't produce pages of text.
+3. **A hallucination filter** (`src/lib/engine/hallucination.ts`) that collapses loops to at most two copies (keeping real repetition like "さあ、さあ"), removes Whisper's known phantom phrases (closing lines, subtitle credits, bracketed sound effects) and drops windows with more text than anyone could say in that time.
+4. **Subtitle line clean-up**: filler-only lines ("あ", "ん") are dropped (reactions like "え?" are kept), and implausibly long timings are trimmed.
+
+#### How the English is kept correct
+
+The on-device translator (opus-mt, ~110 MB) is small, so the app helps it and checks its work (`src/lib/anime/normalize.ts`, `translate-guard.ts`, `names.ts`):
+
+- **Dialect normalisation:** anime is full of Kansai-ben and casual speech the model wasn't trained on. Before translating, common forms are rewritten to standard Japanese (やで → だよ, あらへん → ない, 早よ → 早く, 気ぃつけて → 気をつけて, ほんま → 本当…). In testing this fixed several meaning flips (for example 「絶対やで」 went from "Absolutely not." to "I promise.").
+- **Names:** character names are swapped for placeholders the model handles reliably, then the real name is put back ("せっちゃん、お兄ちゃんの言うこと聞くんよ" → "Setchan, you're gonna listen to your brother.").
+- **Fixed phrases:** short reactions and greetings use exact subtitle translations (え？ → "Huh?", 大丈夫？ → "Are you okay?", さようなら → "Goodbye.").
+- **Output checks:** every translation is checked for loops, counting ("one, two, three…"), runaway length, profanity the Japanese doesn't contain and stock filler sentences. A bad result is retried with stricter settings, then translated phrase by phrase; if it still fails, the English is left **empty rather than wrong**, ready to type in the editor.
+
+**What to expect.** These steps remove the garbage (loops, invented lines, nonsense translations), but they can't fix words the speech model *mishears*. On a 1988 film with music, sound effects and Kansai dialect, the accurate model still mishears some words, such as place names, and the English for those lines will be off. That's why lines get flagged for review (below).
+
+#### "Needs review" flags
+
+The app can't guarantee every line is right, so it tells you **which lines to check**. A line is flagged (amber, with the reason) when:
+
+- the translation failed its checks, needed a fallback, or is empty (*"no reliable English — please type it"*);
+- the Japanese contains words the dictionary doesn't know, a typical sign of a mishearing (*"some words may be misheard"*);
+- the quick scan and the accurate pass heard clearly different words at that moment (*"the two speech passes heard different words"*).
+
+Each clip card shows **⚠ N subtitle lines to review**, and the editor's **N need review** button jumps to the first one. Editing the Japanese or English clears the flag, or press **✓ Looks right**. **↻ Auto furigana** keeps the flag, because adding readings doesn't confirm the words.
+
+Furigana also has a correction list for common words the dictionary misreads in speech (一人 → ひとり, 後で → あとで, 大人 → おとな, お母ちゃん → かあ, 節ちゃん → せっちゃん…). It only applies when the word stands on its own, so compounds such as 大人気 (だいにんき) are left alone.
+
+### Editing subtitles
+
+Every line can be changed, and the preview updates instantly:
+
+- **Times:** edit the start and end of a line (changes apply when you leave the field).
+- **Japanese:** plain text or ruby markup, e.g. `<ruby>漢<rt>かん</rt></ruby>字`. Fix a wrong reading by editing the text inside `<rt>…</rt>`.
+- **↻ Auto furigana:** re-generate the readings after you change the Japanese text.
+- **English:** edit the translation.
+- **+ Add line at playhead**, **▶ Go to** and **Delete** manage lines. The line playing in the preview is highlighted.
+- **Download JSON** (and **Import JSON** in manual mode): save subtitles, load them back later, or bring in subtitles made elsewhere (see [Subtitle JSON](#subtitle-json)).
+
+Export renders the clip with the subtitles burned in (H.264 video, AAC audio). You can cancel while it renders.
+
+### How it looks
+
+- **The source is never cropped or stretched.** It keeps its aspect ratio and is centred in the 9:16 canvas.
+- **Landscape videos** (16:9, 21:9…) leave empty bands above and below the video. The bottom band holds the subtitles.
+- **Portrait or tall videos** (9:16 and similar) have little or no margin, so they are scaled down just enough to free a subtitle band (about a quarter of the height). The blur or dark fill shows at the sides.
+- **Furigana** sits directly above its kanji only (okurigana stays plain, e.g. 食(た)べる). Readings are never split across lines, and lines reserve room for the furigana, so nothing overlaps.
+- **Line breaks** are balanced, prefer the natural pause after `、`, and never start a line with punctuation such as `。` or `、`. Long text shrinks to fit the band.
+- A small area at the very bottom stays empty so subtitles aren't hidden by the Reels/Shorts buttons and captions.
+
+### How the subtitles are made
 
 | Step | Runs in | Tech |
 | --- | --- | --- |
-| Speech to Japanese text | Web Worker | Whisper (tiny / base / small) via transformers.js |
-| Japanese → English | Web Worker (default) | `Xenova/opus-mt-ja-en` (~110 MB, cached after the first run) |
-| Japanese → English (optional) | Server proxy | `/api/ai/translate` when `OPENAI_API_KEY` is set (text only, same limits as the other cloud AI calls); falls back to the on-device model if refused |
-| Furigana | Browser | [kuromoji](https://github.com/sglkc/kuromoji.js) morphological analysis, readings aligned to kanji only (dictionary self-hosted in `public/kuromoji-dict`) |
+| Audio for the selected range | Web Worker | WebCodecs; ffmpeg.wasm when the browser can't decode the audio (export uses the same fallback, so the audio is never dropped) |
+| Finding speech | Web Worker | Silero VAD (`onnx-community/silero-vad`) via transformers.js |
+| Speech to Japanese text | Web Worker | Whisper (tiny / base / small, language fixed to Japanese) via transformers.js, speech windows only, plus the hallucination filter |
+| Splitting into subtitle lines | Browser | Sentence ends, pauses and length limits; loops, phantom and filler-only lines are removed (`src/lib/anime/subtitles.ts`) |
+| Japanese → English | Web Worker (default) | `Xenova/opus-mt-ja-en` with dialect normalisation, name protection, fixed phrases and output checks (`src/lib/browser/translate.worker.ts`) |
+| Japanese → English (optional) | Server proxy | GPT via `/api/ai/translate` when `OPENAI_API_KEY` is set. Falls back to the on-device model if it's refused or fails |
+| Furigana | Browser | [kuromoji](https://github.com/sglkc/kuromoji.js) morphological analysis, readings aligned to the kanji (`src/lib/anime/furigana.ts`, `ruby.ts`; dictionary self-hosted in `public/kuromoji-dict`) |
 | Preview and export | Browser / Web Worker | One shared canvas renderer (`src/lib/anime/renderer.ts`) + Mediabunny (H.264 + AAC) |
 
-Whisper recognition and machine translation are not perfect, especially for fast, noisy or music-heavy scenes. Use the **Accurate** model for better Japanese and review the lines before exporting. The first run downloads the models and dictionary once.
+Speech recognition and machine translation are not perfect, especially for fast, noisy or music-heavy scenes, names and slang (see [What to expect](#how-the-english-is-kept-correct)). Review the lines before exporting.
 
-**Subtitle JSON.** *Download JSON* writes, and *Import JSON* reads, this structure (times are absolute seconds in the source video). Japanese can be given as `segments`, as `ruby` markup, or just as plain `text` (furigana is then added on import):
+### Subtitle JSON
+
+*Download JSON* writes, and *Import JSON* reads, this structure (times are absolute seconds in the source video). On import, Japanese can be given as `segments`, as `ruby` markup, or just as plain `text` (furigana is then added automatically). A bare array of subtitle objects is accepted too.
 
 ```json
 {
@@ -186,7 +320,19 @@ Whisper recognition and machine translation are not perfect, especially for fast
 }
 ```
 
-Subtitle fonts come from the system (Yu Gothic, Hiragino, Noto Sans JP, Meiryo…), so a Japanese-capable font must be installed on the device that exports.
+| Field | Meaning |
+| --- | --- |
+| `start`, `end` | Seconds in the source video. Lines with `end <= start` are skipped on import. |
+| `text` | Plain Japanese. |
+| `ruby` | The same Japanese with standard HTML ruby markup (`<rp>` and `<rb>` are accepted on import). |
+| `segments` | Structured form: each run of text, with `ruby` (hiragana reading) only on runs that contain kanji. |
+| `en` | English translation. |
+
+### Tips
+
+- Pick ranges with clear dialogue; background music and overlapping voices lower recognition quality.
+- Keep clips short (under about a minute) for Reels. Generation works on the selected range only, so a short range is also faster.
+- Subtitle fonts come from the system (Yu Gothic, Hiragino, Noto Sans JP, Meiryo…). The device that exports needs a Japanese-capable font, which Windows, macOS, iOS and Android include.
 
 ---
 
@@ -219,7 +365,7 @@ Type-check with `npm run lint`.
 
 ### Optional: cloud AI (`.env.local`)
 
-No keys are needed. To add GPT-written titles and hashtags, extra moment analysis, and a "Cloud Whisper API" transcription option, copy `.env.example` to `.env.local` and set:
+No keys are needed. To add GPT-written titles and hashtags, extra moment analysis, a "Cloud Whisper API" transcription option, and GPT translation in Anime Clipper, copy `.env.example` to `.env.local` and set:
 
 ```bash
 OPENAI_API_KEY=sk-...
@@ -228,7 +374,7 @@ OPENAI_TRANSCRIBE_MODEL=whisper-1
 OPENAI_BASE_URL=             # optional OpenAI-compatible endpoint
 ```
 
-The key stays on the server, and the browser goes through the `/api/ai/*` proxy. GPT receives only the transcript **text**. Audio is sent to the server only if you pick "Cloud Whisper API".
+The key stays on the server, and the browser goes through the `/api/ai/*` proxy. GPT receives only the transcript **text** (in Anime Clipper: the recognised Japanese lines, for translation). Audio is sent to the server only if you pick "Cloud Whisper API".
 
 #### Protecting your OpenAI credit on a public site
 
@@ -372,20 +518,26 @@ clips.example.com {
 | Live 9:16 preview with captions | Browser (canvas) | `ReelPlayer` + `engine/renderer.ts` |
 | 1080×1920 MP4 export with burned-in captions | Web Worker | Mediabunny `Conversion` (H.264 + AAC) |
 | *Optional:* GPT titles and moments, Whisper API | Server proxy | `/api/ai/*`, only if `OPENAI_API_KEY` is set |
+| **Anime Clipper:** Japanese speech → subtitles | Web Workers | Whisper (Japanese) + `opus-mt-ja-en` translation (`translate.worker.ts`), or GPT via `/api/ai/translate` |
+| **Anime Clipper:** furigana | Browser | kuromoji + reading alignment (`src/lib/anime/furigana.ts`, `ruby.ts`) |
+| **Anime Clipper:** 9:16 layout, preview and export | Browser / Web Worker | `anime/frame.ts` + `anime/renderer.ts`, `AnimePreview`, Mediabunny |
 
-The preview player and the exporter share **one canvas renderer**, so what you see in the editor is exactly what you download.
+The preview player and the exporter share **one canvas renderer** (one per clipper), so what you see in the editor is exactly what you download.
 
 ```
 src/
-├─ app/                 Next.js pages + API routes (/api/ai/* optional proxy, /api/config, /api/health)
-├─ components/          UI: upload, clipping rules, processing dashboard, clip grid, editor, ReelPlayer
+├─ app/                 Next.js pages (/ = Viral Clipper, /anime = Anime Clipper, /jobs/[id]) + API routes
+│                       (/api/ai/* optional proxy incl. /api/ai/translate, /api/config, /api/health)
+├─ components/          UI: upload, clipping rules, processing dashboard, clip grid, editor, ReelPlayer,
+│                       ModeSwitch (header toggle), AnimeClipper + AnimePreview
 └─ lib/
-   ├─ browser/          IndexedDB store, pipeline orchestration, Web Workers, ffmpeg.wasm fallback
+   ├─ browser/          IndexedDB store, pipeline orchestration, Web Workers (media, Whisper, translation), ffmpeg.wasm fallback
    ├─ engine/           Pure analysis: signals, moments & plot twists, rules, scoring, reframing, renderer
    ├─ anime/            Anime Clipper: subtitle schema, ruby/furigana, frame layout + renderer, generation pipeline
    └─ server/           OpenAI helpers for the optional proxy
+scripts/                Postinstall: copy ffmpeg.wasm and the kuromoji dictionary into public/
 Dockerfile, docker-compose*.yml, deploy/   Container image + auto-updating deployments
 .github/workflows/docker.yml               CI: build & publish the image on every push to main
 ```
 
-Built with Next.js, TypeScript, Tailwind CSS, Mediabunny, transformers.js and ffmpeg.wasm.
+Built with Next.js, TypeScript, Tailwind CSS, Mediabunny, transformers.js, ffmpeg.wasm and kuromoji.

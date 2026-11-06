@@ -118,6 +118,7 @@ export function summarize(job: Job): JobSummary {
   const top = [...job.clips].sort((a, b) => b.viralScore - a.viralScore)[0];
   return {
     id: job.id,
+    kind: job.settings.kind ?? "viral",
     name: job.name,
     createdAt: job.createdAt,
     status: job.status,

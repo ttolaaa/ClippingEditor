@@ -1,4 +1,5 @@
 import type { Word } from "../types";
+import { isFillerOnly, isPhantom } from "../engine/hallucination";
 import { compact, parseMarkup, segmentsToMarkup, segmentsToText, SENTENCE_END } from "./ruby";
 import type { AnimeSubtitle, AnimeSubtitleFile, RubySegment } from "./types";
 
@@ -25,13 +26,31 @@ export function segmentJapanese(words: Word[]): RawLine[] {
   let cur: Word[] = [];
   const flush = () => {
     if (!cur.length) return;
-    const text = joinTokens(cur.map((w) => w.text)).trim();
-    if (text && /[\p{L}\p{N}]/u.test(text)) lines.push({ start: cur[0].start, end: cur[cur.length - 1].end, text });
+    const joined = joinTokens(cur.map((w) => w.text)).trim();
+    // Phrase markers that chop a line into 1–2 character fragments ("ん　に　活動　節") are tokenizer noise, not pauses.
+    const pieces = joined.split("\u200B").filter((p) => p.trim());
+    const markers = pieces.length > 2 && joined.replace(/\u200B/g, "").length / pieces.length < 3 ? joined.replace(/\u200B/g, "") : joined;
+    const text = markers
+      // Whisper's phrase pauses (marked with U+200B by the worker) become a full-width space between Japanese words.
+      .replace(/(?<=[\u3040-\u30ff\u3400-\u9fff\uff01-\uff5e、。！？!?])\u200B(?=[\u3040-\u30ff\u3400-\u9fff「『])/g, "\u3000")
+      .replace(/\u200B/g, "")
+      // A phrase recognised twice back to back ("本当に大丈夫ですか本当に大丈夫ですか") is a recognition artefact.
+      .replace(/(.{4,}?)\1+/g, "$1");
+    if (text && /[\p{L}\p{N}]/u.test(text) && !isPhantom(text) && !isFillerOnly(text)) {
+      let start = cur[0].start;
+      const end = cur[cur.length - 1].end;
+      // A short line can't take 20 s to say: Whisper stretched the first word over music. Anchor it to its end.
+      const maxDur = Math.max(3.5, text.length * 0.45);
+      if (end - start > maxDur) start = end - maxDur;
+      lines.push({ start, end, text });
+    }
     cur = [];
   };
   for (const w of words) {
     const prev = cur[cur.length - 1];
     if (prev && w.start - prev.end > GAP_BREAK) flush();
+    // A phrase boundary (marked by the worker) is a natural place to break a long line.
+    if (cur.length && w.text.startsWith("\u200B") && cur.reduce((n, x) => n + x.text.length, 0) >= SOFT_CHARS) flush();
     cur.push(w);
     const chars = cur.reduce((n, x) => n + x.text.length, 0);
     const dur = w.end - cur[0].start;
@@ -39,13 +58,76 @@ export function segmentJapanese(words: Word[]): RawLine[] {
   }
   flush();
 
-  // Drop Whisper "loops" (the same line repeated many times) and give very short lines time to be read.
+  // Punctuation split off from its sentence ("?心配…") belongs to the previous line.
+  for (let i = 1; i < lines.length; i++) {
+    const lead = /^[?？!！。、,.…]+/.exec(lines[i].text)?.[0];
+    if (lead && lines[i].start - lines[i - 1].end < 1.5) {
+      lines[i - 1].text += lead;
+      lines[i].text = lines[i].text.slice(lead.length).trim();
+    }
+  }
+
+  // Drop Whisper artefacts: the same line looped, or a sentence repeated "compressed" into a fraction of a second
+  // (happens where recognition chunks overlap). Normal Japanese speech is roughly 5-12 characters per second.
+  const norm = (s: string) => s.replace(/[\s、。？！?!,.…]/g, "");
   const out: RawLine[] = [];
-  for (const l of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const key = norm(l.text);
+    if (!key) continue;
     const n = out.length;
     if (n >= 2 && out[n - 1].text === l.text && out[n - 2].text === l.text) continue;
+    const cps = key.length / Math.max(0.05, l.end - l.start);
+    if (cps > 20) {
+      const near = lines.filter((o, j) => j !== i && Math.abs(o.start - l.start) < 15 && norm(o.text).length >= 3);
+      const repeated = near.some((o) => {
+        const k = norm(o.text);
+        return k.includes(key) || key.includes(k);
+      });
+      if (repeated) continue;
+    }
     out.push({ ...l });
   }
+  // Neighbouring lines where one contains the other (within a second) are the same speech recognised twice.
+  const edgePunct = /^[\s、。？！?!,.…]+|[\s、,]+$/g;
+  for (let i = out.length - 1; i > 0; i--) {
+    const a = out[i - 1];
+    const b = out[i];
+    if (b.start - a.end > 1) continue;
+    const ka = norm(a.text);
+    const kb = norm(b.text);
+    if (!(ka.includes(kb) || kb.includes(ka))) continue;
+    const longIdx = ka.length >= kb.length ? i - 1 : i;
+    const long = out[longIdx];
+    const short = out[longIdx === i ? i - 1 : i];
+    const kl = norm(long.text);
+    const ks = norm(short.text);
+    if (ks.length >= kl.length * 0.7) {
+      // Near-identical: keep the one with the more natural reading speed.
+      const cpsLong = kl.length / Math.max(0.05, long.end - long.start);
+      const cpsShort = ks.length / Math.max(0.05, short.end - short.start);
+      out.splice(cpsLong > cpsShort ? longIdx : out.indexOf(short), 1);
+      continue;
+    }
+    // The longer line also contains the shorter one's words: cut that part off the longer line when it sits at
+    // its start or end (timing scaled by characters), otherwise drop the shorter duplicate.
+    const core = short.text.replace(/[。？！?!]+$/, "");
+    const at = long.text.indexOf(core);
+    const span = long.end - long.start;
+    if (at === 0) {
+      const rest = long.text.slice(core.length).replace(edgePunct, "");
+      long.start += (span * core.length) / long.text.length;
+      long.text = rest;
+    } else if (at > 0 && at + core.length >= long.text.length - 2) {
+      const rest = long.text.slice(0, at).replace(edgePunct, "");
+      long.end = long.start + (span * at) / long.text.length;
+      long.text = rest;
+    } else {
+      out.splice(out.indexOf(short), 1);
+    }
+    if (!norm(long.text)) out.splice(out.indexOf(long), 1);
+  }
+  out.sort((x, y) => x.start - y.start);
   for (let i = 0; i < out.length; i++) {
     const next = out[i + 1];
     const wanted = out[i].start + Math.min(2.5, Math.max(0.8, out[i].text.length * 0.12));

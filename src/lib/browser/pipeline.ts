@@ -1,6 +1,7 @@
 "use client";
 
 import type { Clip, Job, JobSettings, Moment, PlotTwist, Stage, StageId, Transcript, Word } from "../types";
+import type { AnimeSubtitle } from "../anime/types";
 import { groupWordsIntoLines, presetStyle } from "../captions";
 import type { AudioSignal, VisualSignal } from "../engine/signals";
 import { applyMomentsToTimeline, buildTimeline, detectPlotTwists, heuristicMoments, interestCurve, mergeTwists } from "../engine/analysis";
@@ -8,10 +9,18 @@ import { clipText, heuristicMeta, selectClips, type Candidate } from "../engine/
 import { describeRules, effectiveRules, hasRules } from "../engine/rules";
 import { computeCropPath } from "../engine/reframe";
 import { LANGUAGES, buildSegments, normalizeWords, spreadWords } from "../engine/transcript";
-import { activeJobs, getBlob, getJob, loadJobs, putBlob, putData, putJob, updateClip, updateJob } from "./store";
+import { activeJobs, getBlob, getData, getJob, loadJobs, putBlob, putData, putJob, updateClip, updateJob } from "./store";
 import { canPlayInVideoElement, runMediaTask } from "./workers";
 import type { ProbeInfo } from "./media.worker";
 import { requestPersistence } from "./db";
+import { slugify } from "../client";
+import type { Cue } from "../anime/subfile";
+
+/** A transcript built from subtitle cues: each cue is one segment (and one "word" spanning it). */
+function transcriptFromCues(cues: Cue[]): Transcript {
+  const words = cues.map((c) => ({ text: c.text, start: c.start, end: c.end }));
+  return { provider: "file", language: "japanese", words, segments: cues.map((c) => ({ text: c.text, start: c.start, end: c.end })) };
+}
 
 const STAGE_DEFS: { id: StageId; label: string; weight: number }[] = [
   { id: "probe", label: "Reading video", weight: 0.02 },
@@ -21,12 +30,14 @@ const STAGE_DEFS: { id: StageId; label: string; weight: number }[] = [
   { id: "visual", label: "Scene & speaker tracking", weight: 0.22 },
   { id: "analyze", label: "Detecting viral moments & plot twists", weight: 0.05 },
   { id: "select", label: "Ranking clips", weight: 0.03 },
+  { id: "subtitle", label: "Translating & adding furigana", weight: 0.12 },
   { id: "render", label: "Preparing 9:16 previews", weight: 0.1 },
 ];
 
 export const WHISPER_MODELS = {
   tiny: "onnx-community/whisper-tiny_timestamped",
   base: "onnx-community/whisper-base_timestamped",
+  small: "onnx-community/whisper-small_timestamped",
 } as const;
 
 export interface ServerCaps {
@@ -85,16 +96,22 @@ async function cloudRefusal(res: Response): Promise<string | null> {
   return data.error || `Cloud AI unavailable (${res.status})`;
 }
 
-function initialStages(): Stage[] {
-  return STAGE_DEFS.map((s) => ({ id: s.id, label: s.label, status: "pending", progress: 0 }));
+function initialStages(settings: JobSettings): Stage[] {
+  // The subtitle stage (translation + furigana) only exists for Anime Clipper projects.
+  return STAGE_DEFS.filter((s) => s.id !== "subtitle" || settings.kind === "anime").map((s) => ({ id: s.id, label: s.label, status: "pending", progress: 0 }));
 }
 
 // ---------------------------------------------------------------- project creation & queue
 
-export async function createProject(file: File, settings: JobSettings): Promise<string> {
+export async function createProject(file: File, settings: JobSettings, subtitleCues?: { ja?: Cue[]; en?: Cue[] }): Promise<string> {
   await loadJobs();
   requestPersistence();
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  if (subtitleCues?.ja?.length || subtitleCues?.en?.length) {
+    settings = { ...settings, subtitleFiles: { ja: subtitleCues.ja?.length || undefined, en: subtitleCues.en?.length || undefined } };
+    if (subtitleCues.ja?.length) await putData(id, "subs-ja", subtitleCues.ja);
+    if (subtitleCues.en?.length) await putData(id, "subs-en", subtitleCues.en);
+  }
   const job: Job = {
     id,
     name: file.name,
@@ -103,7 +120,7 @@ export async function createProject(file: File, settings: JobSettings): Promise<
     status: "queued",
     progress: 0,
     warnings: [],
-    stages: initialStages(),
+    stages: initialStages(settings),
     settings,
     source: {
       originalName: file.name,
@@ -136,7 +153,7 @@ export function retryProject(id: string) {
       j.etaSeconds = undefined;
       j.startedAt = undefined;
       j.finishedAt = undefined;
-      j.stages = initialStages();
+      j.stages = initialStages(j.settings);
       j.clips = [];
       j.analysis = undefined;
     },
@@ -175,7 +192,9 @@ function transcribeExpected(job: Job): number {
   const d = job.source?.duration ?? 60;
   if (job.settings.transcription === "none" || !job.source?.hasAudio) return 0;
   if (job.settings.transcription === "cloud") return d * 0.08 + 5;
-  const perSec = job.settings.whisperModel === "base" ? 1.1 : 0.5;
+  const perSec = { tiny: 0.5, base: 1.1, small: 3 }[job.settings.whisperModel] ?? 1.1;
+  // With voice activity detection only speech (typically 25–40 % of a film) is transcribed.
+  if (job.settings.vad) return d * 0.02 + d * 0.35 * perSec + 20;
   return d * perSec + 20;
 }
 
@@ -186,14 +205,18 @@ function convertExpected(job: Job): number {
 
 function recompute(job: Job) {
   let p = 0;
+  let totalWeight = 0;
   for (const def of STAGE_DEFS) {
-    const s = job.stages.find((x) => x.id === def.id)!;
+    const s = job.stages.find((x) => x.id === def.id);
+    if (!s) continue;
+    totalWeight += def.weight;
     const expected = s.id === "transcribe" ? transcribeExpected(job) : s.id === "convert" ? convertExpected(job) : 0;
     if (expected > 0 && s.status === "active" && s.startedAt) {
       s.progress = Math.max(s.progress, Math.min(0.9, (Date.now() - s.startedAt) / 1000 / expected));
     }
     p += def.weight * (s.status === "done" || s.status === "skipped" ? 1 : s.progress);
   }
+  p /= totalWeight || 1;
   job.progress = Math.min(0.999, p);
   if (!job.startedAt) return;
   const d = job.source?.duration || 60;
@@ -264,7 +287,9 @@ async function processJob(id: string) {
   } else {
     stage(id, "convert", { status: "skipped", detail: "Not needed" });
   }
-  const info = probeRes;
+  // probe.hasAudio means "WebCodecs can decode it". If a track exists but can't be decoded here, still treat it as audio:
+  // the analysis worker reports "audio-failed" and ffmpeg.wasm decodes it instead (and export reuses that fallback).
+  const info = { ...probeRes, hasAudio: probeRes.hasAudio || !!probeRes.audioCodec };
   if (!info.duration || info.duration < 2) throw new Error("Video is too short or its duration could not be read.");
   updateJob(id, (j) => Object.assign(j.source!, { duration: info.duration, width: info.width, height: info.height, fps: info.fps, hasAudio: info.hasAudio }));
   stage(id, "probe", { status: "done", detail: `${info.width}×${info.height}, ${Math.round(info.fps)} fps, ${Math.round(info.duration)}s · ${info.videoCodec ?? "?"}/${info.audioCodec ?? "no audio"}` });
@@ -272,7 +297,9 @@ async function processJob(id: string) {
 
   // 2-4. Audio + visual analysis in the media worker; transcription starts as soon as audio is decoded.
   const job = getJob(id)!;
-  const mode = info.hasAudio ? job.settings.transcription : "none";
+  // A Japanese subtitle/transcript file replaces speech recognition entirely: exact text, and much faster.
+  const jaCues = job.settings.subtitleFiles?.ja ? ((await getData<Cue[]>(id, "subs-ja")) ?? []) : [];
+  const mode = jaCues.length ? "none" : info.hasAudio ? job.settings.transcription : "none";
   let audio: AudioSignal | null = null;
   let visual: VisualSignal | null = null;
   let resolveTranscript!: (t: Transcript) => void;
@@ -282,9 +309,12 @@ async function processJob(id: string) {
   if (info.hasAudio) stage(id, "audio", { status: "active", detail: "Decoding audio with WebCodecs" });
   else {
     stage(id, "audio", { status: "skipped", detail: "No audio track" });
-    warn(id, "This video has no audio track — captions and speech analysis are unavailable.");
+    if (!jaCues.length) warn(id, "This video has no audio track — captions and speech analysis are unavailable.");
   }
-  if (mode === "none") {
+  if (jaCues.length) {
+    stage(id, "transcribe", { status: "done", detail: `Using your Japanese subtitle file (${jaCues.length} lines) — no speech recognition needed` });
+    resolveTranscript(transcriptFromCues(jaCues));
+  } else if (mode === "none") {
     stage(id, "transcribe", { status: "skipped", detail: info.hasAudio ? "Transcription turned off" : "No audio" });
     resolveTranscript(none);
   }
@@ -385,6 +415,7 @@ async function processJob(id: string) {
     if (m.refused) warn(id, `Cloud titles skipped: ${m.refused}. Titles and hashtags were written on-device.`);
   }
   const used = new Set<string>();
+  const anime = job.settings.kind === "anime";
   const clips: Clip[] = cands.map((c, i) => {
     const meta = metas[i] ?? heuristicMeta(c, transcript, i, used);
     const crop = computeCropPath(visual, c.start, c.end, info.width, info.height);
@@ -411,16 +442,20 @@ async function processJob(id: string) {
       twistAt: c.twistAt,
       status: "rendering",
       progress: 0,
-      reframeMode: job.settings.reframeMode,
+      reframeMode: anime ? "fit" : job.settings.reframeMode,
       crop,
       trackingConfidence: Math.round(crop.confidence * 100) / 100,
       captions: groupWordsIntoLines(words, style.wordsPerLine),
       style,
+      ...(anime ? { anime: { layout: job.settings.anime?.layout ?? "both", background: job.settings.anime?.background ?? "blur", subtitles: [] } } : {}),
       export: { status: "idle", progress: 0 },
     };
   });
   updateJob(id, (j) => (j.clips = clips), true);
   stage(id, "select", { status: "done", detail: `${clips.length} clips ranked by viral score` });
+
+  // 6b. Anime Clipper: Japanese subtitle lines -> English translation + furigana for every picked clip.
+  if (anime) await buildAnimeSubtitles(id, transcript, file);
 
   // 7. Poster frames (previews themselves render live in the browser — no waiting)
   stage(id, "render", { status: "active", detail: "Generating 9:16 poster frames" });
@@ -431,9 +466,9 @@ async function processJob(id: string) {
         file,
         width: 360,
         height: 640,
-        items: clips.map((c) => {
+        items: getJob(id)!.clips.map((c) => {
           const rel = Math.min(c.duration / 3, 3);
-          return { key: c.id, time: c.start + rel, rel, crop: c.crop, mode: c.reframeMode };
+          return { key: c.id, time: c.start + rel, rel, crop: c.crop, mode: c.reframeMode, anime: c.anime };
         }),
       },
       "thumbs",
@@ -459,6 +494,170 @@ async function processJob(id: string) {
     j.etaSeconds = 0;
     j.finishedAt = Date.now();
   }, true);
+}
+
+// ---------------------------------------------------------------- Anime Clipper subtitles
+
+const ANIME_HASHTAGS = ["#anime", "#animeclips", "#learnjapanese", "#japanese", "#furigana"];
+
+/**
+ * Build each clip's bilingual subtitles. Japanese comes from the user's subtitle file when there is one (exact),
+ * otherwise from speech recognition (with an accurate second pass). English comes from the user's English file when it
+ * has a line at that moment, otherwise from machine translation (flagged when uncertain).
+ */
+async function buildAnimeSubtitles(id: string, transcript: Transcript, file: Blob) {
+  stage(id, "subtitle", { status: "active", detail: "Preparing subtitle lines" });
+  const [{ segmentJapanese, newSubtitleId }, { translateToEnglish, transcribeRanges, mergeRanges, reviewReason }, { annotateFurigana }, { cuesFor }] =
+    await Promise.all([import("../anime/subtitles"), import("../anime/generate"), import("../anime/furigana"), import("../anime/subfile")]);
+  const job = getJob(id)!;
+  const clips = job.clips;
+  const jaCues = job.settings.subtitleFiles?.ja ? ((await getData<Cue[]>(id, "subs-ja")) ?? []) : [];
+  const enCues = job.settings.subtitleFiles?.en ? ((await getData<Cue[]>(id, "subs-en")) ?? []) : [];
+  const inClips = (l: { start: number; end: number }) => clips.some((c) => l.end > c.start && l.start < c.end);
+
+  let words = transcript.words;
+  let lines: { start: number; end: number; text: string }[];
+  if (jaCues.length) {
+    lines = jaCues.filter(inClips).map((c) => ({ start: c.start, end: c.end, text: c.text }));
+  } else {
+    // Second pass: the quick scan only had to find good moments; re-transcribe just the picked clips with the accurate
+    // model so the subtitles are as correct as possible (minutes of audio instead of the whole video).
+    const subModel = job.settings.subtitleModel;
+    if (subModel && subModel !== job.settings.whisperModel && clips.length) {
+      try {
+        const ranges = mergeRanges(clips, 1, job.source?.duration ?? Infinity);
+        const minutes = Math.max(1, Math.round(ranges.reduce((a, r) => a + r.end - r.start, 0) / 60));
+        words = await transcribeRanges(file, ranges, subModel, (detail, p) =>
+          stage(id, "subtitle", { detail: `Accurate subtitles (Whisper ${subModel}, ${minutes} min of clips): ${detail}`, progress: (p ?? 0) * 0.6 }),
+        );
+        updateJob(id, (j) => (j.engine = `${j.engine ?? ""} · subtitles: Whisper ${subModel}`));
+      } catch (e) {
+        console.error("Accurate re-transcription failed", e);
+        warn(id, `The accurate subtitle pass failed (${(e as Error).message.slice(0, 120)}), so subtitles use the quick scan.`);
+        words = transcript.words;
+      }
+    }
+    lines = segmentJapanese(words).filter(inClips);
+  }
+  if (!lines.length) {
+    stage(id, "subtitle", { status: "skipped", detail: "No Japanese speech inside the clips" });
+    if (transcript.words.length) warn(id, "No speech was found inside the picked clips, so they have no subtitles. You can add lines in the editor.");
+    return;
+  }
+
+  // English: the user's file first, machine translation only for lines it doesn't cover.
+  const english: string[] = lines.map((l) => (enCues.length ? cuesFor(enCues, l.start, l.end) : ""));
+  const fromFile = english.map((t) => !!t);
+  let uncertain: boolean[] = lines.map(() => false);
+  const missing = lines.map((_, i) => i).filter((i) => !english[i]);
+  if (missing.length) {
+    try {
+      const tr = await translateToEnglish(
+        missing.map((i) => lines[i].text),
+        (detail, p) => stage(id, "subtitle", { detail, progress: 0.6 + (p ?? 0) * 0.3 }),
+      );
+      uncertain = lines.map(() => false);
+      missing.forEach((i, j) => {
+        english[i] = tr.translations[j] ?? "";
+        uncertain[i] = tr.uncertain[j] ?? !english[i];
+      });
+      if (tr.note) warn(id, tr.note);
+    } catch (e) {
+      console.error("Translation failed", e);
+      missing.forEach((i) => (uncertain[i] = true));
+      warn(id, `English translation failed (${(e as Error).message.slice(0, 120)}). Japanese subtitles were kept; you can type the English in the editor.`);
+    }
+  }
+
+  // Lines the quick scan heard very differently are likely misheard by one of the passes (not relevant for file text).
+  const scanWords = !jaCues.length && words !== transcript.words ? transcript.words : undefined;
+  const subs: AnimeSubtitle[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    let ja: AnimeSubtitle["ja"] = [{ text: lines[i].text }];
+    try {
+      ja = await annotateFurigana(lines[i].text);
+    } catch (e) {
+      if (i === 0) warn(id, `Furigana could not be added (${(e as Error).message.slice(0, 120)}).`);
+    }
+    const en = english[i] ?? "";
+    let review: string | undefined;
+    if (!jaCues.length) review = await reviewReason(lines[i], en, !fromFile[i] && (uncertain[i] ?? false), scanWords);
+    else if (!en) review = "Check: no reliable English — please type it";
+    else if (!fromFile[i] && uncertain[i]) review = "Check: translation was uncertain";
+    subs.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja, en, enSource: fromFile[i] ? "file" : "machine", ...(review ? { review } : {}) });
+    stage(id, "subtitle", { detail: "Adding furigana", progress: 0.9 + 0.1 * ((i + 1) / lines.length) });
+  }
+  const toReview = subs.filter((s) => s.review).length;
+  if (toReview) warn(id, `${toReview} of ${subs.length} subtitle lines are marked “Needs review” (possible mishearing or uncertain translation). Check them in each clip's editor.`);
+
+  updateJob(id, (j) => {
+    const titles = new Set<string>();
+    for (const c of j.clips) {
+      const own = subs.filter((s) => s.end > c.start && s.start < c.end);
+      c.anime = { ...(c.anime ?? { layout: "both", background: "blur" }), subtitles: own.map((s) => ({ ...s, id: newSubtitleId() })) };
+      // English titles read better than the Japanese transcript on the clip grid.
+      const best = own
+        .map((s) => s.en.trim())
+        .filter((t) => t.length > 3 && !titles.has(t))
+        .sort((a, b) => Number(/[!?]/.test(b)) - Number(/[!?]/.test(a)) || Math.abs(a.length - 45) - Math.abs(b.length - 45))[0];
+      if (best) {
+        c.title = best.length > 70 ? `${best.slice(0, 67).trimEnd()}…` : best;
+        c.hook = best.slice(0, 80);
+        titles.add(best);
+      }
+      c.hashtags = [...new Set([...ANIME_HASHTAGS, ...c.hashtags.filter((h) => /^#[a-z0-9]+$/i.test(h))])].slice(0, 8);
+    }
+  }, true);
+  const translated = english.filter((t) => t.trim()).length;
+  const fileEn = fromFile.filter(Boolean).length;
+  stage(id, "subtitle", {
+    status: "done",
+    detail: `${subs.length} lines${jaCues.length ? " (Japanese from your file)" : ""} · ${translated} with English${fileEn ? ` (${fileEn} from your file)` : ""} · furigana added`,
+  });
+}
+
+/**
+ * Import subtitle/transcript files into an existing Anime project: the clip subtitles are rebuilt from them (Japanese
+ * file → exact Japanese; English file → English for matching lines; machine translation fills the rest).
+ */
+export async function importSubtitleFiles(jobId: string, cues: { ja?: Cue[]; en?: Cue[] }, onStatus?: (detail: string) => void) {
+  const job = getJob(jobId);
+  if (!job) throw new Error("Project not found");
+  const file = await getBlob(jobId, "source");
+  if (!file) throw new Error("The source video is missing from browser storage.");
+  if (cues.ja?.length) await putData(jobId, "subs-ja", cues.ja);
+  if (cues.en?.length) await putData(jobId, "subs-en", cues.en);
+  updateJob(
+    jobId,
+    (j) => {
+      j.settings.subtitleFiles = {
+        ja: cues.ja?.length || j.settings.subtitleFiles?.ja,
+        en: cues.en?.length || j.settings.subtitleFiles?.en,
+      };
+      j.warnings = j.warnings.filter((w) => !/Needs review/.test(w));
+    },
+    true,
+  );
+  const transcript = cues.ja?.length ? transcriptFromCues(cues.ja) : ((await getData<Transcript>(jobId, "transcript")) ?? { provider: "none", words: [], segments: [] });
+  const stop = onStatus ? watchStage(jobId, "subtitle", onStatus) : () => undefined;
+  try {
+    await buildAnimeSubtitles(jobId, transcript, file);
+  } finally {
+    stop();
+    updateJob(jobId, (j) => {
+      j.progress = 1;
+      j.etaSeconds = 0;
+    }, true);
+  }
+}
+
+function watchStage(jobId: string, stageId: StageId, fn: (detail: string) => void) {
+  let last = "";
+  const t = setInterval(() => {
+    const s = getJob(jobId)?.stages.find((x) => x.id === stageId);
+    if (s?.detail && s.detail !== last) fn((last = s.detail));
+  }, 300);
+  return () => clearInterval(t);
 }
 
 function buildSummary(t: Transcript, twistCount: number, momentCount: number): string {
@@ -488,7 +687,7 @@ async function transcribeAudio(id: string, pcm: Float32Array, mode: "browser" | 
         words = await transcribeBrowser(id, pcm, settings);
       }
     } else words = await transcribeBrowser(id, pcm, settings);
-    const clean = normalizeWords(words);
+    const clean = normalizeWords(words.map((w) => ({ ...w, text: w.text.replace(/\u200B/g, "") })));
     stage(id, "transcribe", { status: "done", detail: `${clean.length} words (${used === "cloud" ? "Whisper API" : `in-browser Whisper ${settings.whisperModel}`})` });
     return { provider: used, language: settings.language, words: clean, segments: buildSegments(clean) };
   } catch (e) {
@@ -519,7 +718,7 @@ function transcribeBrowser(id: string, pcm: Float32Array, settings: JobSettings)
       worker.terminate();
       reject(new Error(e.message || "Speech worker crashed"));
     };
-    worker.postMessage({ pcm, model: WHISPER_MODELS[settings.whisperModel], language: settings.language }, [pcm.buffer]);
+    worker.postMessage({ pcm, model: WHISPER_MODELS[settings.whisperModel], language: settings.language, vad: !!settings.vad }, [pcm.buffer]);
   });
 }
 
@@ -610,14 +809,32 @@ async function cloudMeta(cands: Candidate[], t: Transcript, instructions?: strin
 
 const exportControllers = new Map<string, AbortController>();
 
-/** Render the final 1080×1920 MP4 in a worker (WebCodecs) and hand it to the browser as a download. */
-export async function exportAndDownload(jobId: string, clipId: string, filename: string) {
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/** Default download name for a clip, e.g. "01-the-weather-is-nice-9x16.mp4". */
+export function clipFilename(c: Clip) {
+  return `${String(c.rank).padStart(2, "0")}-${slugify(c.title) || "clip"}-9x16.mp4`;
+}
+
+/** Render one clip to a 1080×1920 MP4 in a worker (WebCodecs), tracking progress on the clip. Returns null if cancelled. */
+async function renderClip(jobId: string, clipId: string, signal?: AbortSignal): Promise<Blob | null> {
   const job = getJob(jobId);
   const clip = job?.clips.find((c) => c.id === clipId);
-  if (!job || !clip || clip.export.status === "rendering") return;
+  if (!job || !clip || clip.export.status === "rendering") return null;
   const file = await getBlob(jobId, "source");
   if (!file) throw new Error("Source video missing from browser storage");
   const ctrl = new AbortController();
+  const abort = () => ctrl.abort();
+  signal?.addEventListener("abort", abort, { once: true });
   exportControllers.set(clipId, ctrl);
   updateClip(jobId, clipId, (c) => (c.export = { status: "rendering", progress: 0 }));
   try {
@@ -626,27 +843,100 @@ export async function exportAndDownload(jobId: string, clipId: string, filename:
       const { decodeAudioPcm } = await import("./convert");
       audio = { channels: await decodeAudioPcm(file, { rate: 48000, channels: 2, start: clip.start, duration: clip.end - clip.start }), sampleRate: 48000 };
     }
+    const common = { file, start: clip.start, end: clip.end, width: 1080, height: 1920, audio };
     const res = await runMediaTask(
-      { task: "export", file, start: clip.start, end: clip.end, width: 1080, height: 1920, mode: clip.reframeMode, crop: clip.crop, captions: clip.captions, style: clip.style, audio },
+      clip.anime
+        ? { task: "anime-export", ...common, layout: clip.anime.layout, background: clip.anime.background, subtitles: clip.anime.subtitles }
+        : { task: "export", ...common, mode: clip.reframeMode, crop: clip.crop, captions: clip.captions, style: clip.style },
       "export",
       (m) => m.type === "progress" && updateClip(jobId, clipId, (c) => (c.export = { status: "rendering", progress: m.value as number })),
       ctrl.signal,
     );
-    const url = URL.createObjectURL(res.blob as Blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     updateClip(jobId, clipId, (c) => (c.export = { status: "ready", progress: 1 }));
+    return res.blob as Blob;
   } catch (e) {
-    if ((e as DOMException).name === "AbortError") updateClip(jobId, clipId, (c) => (c.export = { status: "idle", progress: 0 }));
-    else updateClip(jobId, clipId, (c) => (c.export = { status: "error", progress: 0, error: e instanceof Error ? e.message : String(e) }));
+    if ((e as DOMException).name === "AbortError") {
+      updateClip(jobId, clipId, (c) => (c.export = { status: "idle", progress: 0 }));
+      return null;
+    }
+    updateClip(jobId, clipId, (c) => (c.export = { status: "error", progress: 0, error: e instanceof Error ? e.message : String(e) }));
+    throw e;
   } finally {
+    signal?.removeEventListener("abort", abort);
     exportControllers.delete(clipId);
   }
+}
+
+/** Render the final 1080×1920 MP4 in a worker (WebCodecs) and hand it to the browser as a download. */
+export async function exportAndDownload(jobId: string, clipId: string, filename: string) {
+  try {
+    const blob = await renderClip(jobId, clipId);
+    if (blob) saveBlob(blob, filename);
+  } catch {
+    // The error is shown on the clip (export.status = "error").
+  }
+}
+
+export interface BatchProgress {
+  done: number;
+  total: number;
+  /** Progress of the clip being rendered right now (0..1). */
+  current: number;
+  failed: number;
+}
+
+let batchController: AbortController | null = null;
+
+/**
+ * Render several clips one after another and download them as a single ZIP (one file, so the browser doesn't ask to
+ * allow multiple downloads). Clips that fail are skipped and reported; returns the number of clips in the ZIP.
+ */
+export async function exportAllAsZip(jobId: string, clipIds: string[], zipName: string, onProgress: (p: BatchProgress) => void): Promise<{ saved: number; failed: number; cancelled: boolean }> {
+  batchController?.abort();
+  const ctrl = new AbortController();
+  batchController = ctrl;
+  const { createZip } = await import("./zip");
+  const entries: { name: string; data: Blob }[] = [];
+  let failed = 0;
+  const total = clipIds.length;
+  try {
+    for (let i = 0; i < total; i++) {
+      if (ctrl.signal.aborted) break;
+      const clip = getJob(jobId)?.clips.find((c) => c.id === clipIds[i]);
+      if (!clip) continue;
+      onProgress({ done: i, total, current: 0, failed });
+      const unsubscribe = watchClipProgress(jobId, clip.id, (current) => onProgress({ done: i, total, current, failed }));
+      try {
+        const blob = await renderClip(jobId, clip.id, ctrl.signal);
+        if (blob) entries.push({ name: clipFilename(clip), data: blob });
+      } catch {
+        failed++;
+      } finally {
+        unsubscribe();
+      }
+    }
+    const cancelled = ctrl.signal.aborted;
+    if (!cancelled && entries.length) {
+      onProgress({ done: total, total, current: 1, failed });
+      saveBlob(await createZip(entries), zipName);
+    }
+    return { saved: cancelled ? 0 : entries.length, failed, cancelled };
+  } finally {
+    if (batchController === ctrl) batchController = null;
+  }
+}
+
+export function cancelExportAll() {
+  batchController?.abort();
+}
+
+/** Poll a clip's export progress (export progress lives in the store, updated by the worker callbacks). */
+function watchClipProgress(jobId: string, clipId: string, fn: (p: number) => void) {
+  const t = setInterval(() => {
+    const c = getJob(jobId)?.clips.find((x) => x.id === clipId);
+    if (c?.export.status === "rendering") fn(c.export.progress);
+  }, 250);
+  return () => clearInterval(t);
 }
 
 export function cancelExport(clipId: string) {

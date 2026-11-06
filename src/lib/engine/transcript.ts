@@ -20,19 +20,26 @@ export function normalizeWords(words: Word[]): Word[] {
   return out;
 }
 
+const CJK = /[\u3040-\u30ff\u3400-\u9fff\uff00-\uffef]/;
+
+/** Join word tokens: no spaces between Japanese/Chinese tokens, spaces elsewhere. */
+export function joinWords(tokens: string[]): string {
+  return tokens.reduce((acc, t) => (!acc ? t : CJK.test(acc.slice(-1)) || CJK.test(t[0] ?? "") ? acc + t : `${acc} ${t}`), "");
+}
+
 export function buildSegments(words: Word[]): TranscriptSegment[] {
   const segs: TranscriptSegment[] = [];
   let cur: Word[] = [];
   const flush = () => {
     if (!cur.length) return;
-    segs.push({ text: cur.map((w) => w.text).join(" "), start: cur[0].start, end: cur[cur.length - 1].end });
+    segs.push({ text: joinWords(cur.map((w) => w.text)), start: cur[0].start, end: cur[cur.length - 1].end });
     cur = [];
   };
   for (const w of words) {
     const prev = cur[cur.length - 1];
     if (prev && (w.start - prev.end > 1.0 || cur.length > 40)) flush();
     cur.push(w);
-    if (/[.!?]["')\]]?$/.test(w.text)) flush();
+    if (/[.!?。！？]["')\]」』]?$/.test(w.text)) flush();
   }
   flush();
   return segs;

@@ -1,3 +1,5 @@
+import type { AnimeRenderOptions, AnimeSubtitle } from "./anime/types";
+
 export type StageId =
   | "probe"
   | "convert"
@@ -6,6 +8,7 @@ export type StageId =
   | "visual"
   | "analyze"
   | "select"
+  | "subtitle"
   | "render";
 
 export type StageStatus = "pending" | "active" | "done" | "skipped" | "error";
@@ -49,7 +52,8 @@ export interface TranscriptSegment {
 }
 
 export interface Transcript {
-  provider: "cloud" | "browser" | "none";
+  /** "file" = taken from a subtitle/transcript file the user uploaded. */
+  provider: "cloud" | "browser" | "none" | "file";
   language?: string;
   words: Word[];
   segments: TranscriptSegment[];
@@ -163,7 +167,13 @@ export interface Clip {
   trackingConfidence: number;
   captions: CaptionLine[];
   style: CaptionStyle;
+  /** Anime Clipper clips: bilingual subtitles (absolute source times) and how they are laid out. */
+  anime?: AnimeClipData;
   export: ClipExport;
+}
+
+export interface AnimeClipData extends AnimeRenderOptions {
+  subtitles: AnimeSubtitle[];
 }
 
 export type TranscriptionMode = "browser" | "cloud" | "none";
@@ -191,8 +201,18 @@ export interface ClipRules {
 }
 
 export interface JobSettings {
+  /** Which clipper created the project (missing = "viral"). */
+  kind?: "viral" | "anime";
+  /** Default subtitle layout for Anime Clipper projects. */
+  anime?: AnimeRenderOptions;
   transcription: TranscriptionMode;
-  whisperModel: "tiny" | "base";
+  whisperModel: "tiny" | "base" | "small";
+  /** Only transcribe detected speech (voice activity detection) — avoids hallucinated text over music/silence. */
+  vad?: boolean;
+  /** Anime Clipper: re-transcribe the picked clips with this (more accurate) model for the subtitles. */
+  subtitleModel?: "tiny" | "base" | "small" | "large";
+  /** Anime Clipper: subtitle/transcript files the user uploaded (cue counts; the cues are stored as job data). */
+  subtitleFiles?: { ja?: number; en?: number };
   rules?: ClipRules;
   durations: number[];
   maxClipsPerDuration: number;
@@ -231,6 +251,7 @@ export interface Job {
 
 export interface JobSummary {
   id: string;
+  kind: "viral" | "anime";
   name: string;
   createdAt: number;
   status: JobStatus;
