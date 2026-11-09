@@ -12,6 +12,7 @@ const BYTES_PER_MINUTE = 16000 * 2 * 60;
 
 /** Optional cloud transcription: the browser sends one ≤10 min 16 kHz WAV chunk, we relay it to Whisper. */
 export async function POST(req: Request) {
+  if (!getOpenAI()) return NextResponse.json({ error: "Word-timed cloud transcription needs an OpenAI key" }, { status: 501 });
   const big = tooLarge(req, MAX_BYTES);
   if (big) return big;
   const declared = Number(req.headers.get("content-length") || 0);

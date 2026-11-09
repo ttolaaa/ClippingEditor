@@ -6,8 +6,9 @@ import type { AnimeSubtitle } from "@/lib/anime/types";
 import { formatTime } from "@/lib/captions";
 import { slugify } from "@/lib/client";
 import { updateClip } from "@/lib/browser/store";
-import { cancelExport } from "@/lib/browser/pipeline";
+import { cancelExport, importSubtitleFiles } from "@/lib/browser/pipeline";
 import { newSubtitleId, sortSubtitles, toSubtitleFile } from "@/lib/anime/subtitles";
+import { romajiKey, withRomaji } from "@/lib/anime/romaji";
 import AnimePreview, { type AnimePreviewHandle } from "./AnimePreview";
 import { LayoutPicker, SubtitleRow, downloadBlob } from "./AnimeControls";
 import { ScoreRing, Tag, tagTone } from "./ui";
@@ -28,6 +29,7 @@ export default function AnimeClipEditor({
 }) {
   const data: AnimeClipData = clip.anime ?? { layout: "both", background: "blur", subtitles: [] };
   const [now, setNow] = useState(clip.start);
+  const [redoing, setRedoing] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const player = useRef<AnimePreviewHandle>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -49,6 +51,21 @@ export default function AnimeClipEditor({
   const setSubs = (subs: AnimeSubtitle[]) => save({ subtitles: sortSubtitles(subs) });
 
   const activeId = useMemo(() => data.subtitles.find((s) => now >= s.start && now < s.end)?.id, [data.subtitles, now]);
+  // With romaji on, (re)make it for lines whose Japanese or readings changed (the dictionary gives word spacing).
+  const romajiStale = data.romaji ? data.subtitles.filter((s) => s.ja.length && s.romajiFor !== romajiKey(s.ja)).length : 0;
+  useEffect(() => {
+    if (!romajiStale) return;
+    let alive = true;
+    withRomaji(data.subtitles)
+      .then((next) => {
+        if (alive && next !== data.subtitles) updateClip(jobId, clip.id, (c) => c.anime && (c.anime.subtitles = next));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [romajiStale, data.romaji]);
   useEffect(() => {
     if (!playing || !activeId) return;
     listRef.current?.querySelector(`[data-sub="${activeId}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -79,6 +96,8 @@ export default function AnimeClipEditor({
               end={clip.end}
               layout={data.layout}
               background={data.background}
+              romaji={data.romaji}
+              fontScale={data.fontScale}
               subtitles={data.subtitles}
               className="h-full w-full"
               onTime={(t) => {
@@ -145,7 +164,17 @@ export default function AnimeClipEditor({
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-black/45">Subtitle layout</h3>
-            <LayoutPicker compact layout={data.layout} background={data.background} onLayout={(layout) => save({ layout })} onBackground={(background) => save({ background })} />
+            <LayoutPicker
+              compact
+              layout={data.layout}
+              background={data.background}
+              onLayout={(layout) => save({ layout })}
+              onBackground={(background) => save({ background })}
+              romaji={data.romaji}
+              onRomaji={(romaji) => save({ romaji })}
+              fontScale={data.fontScale}
+              onFontScale={(fontScale) => save({ fontScale })}
+            />
 
             <div className="mb-2 mt-6 flex flex-wrap items-center gap-2">
               <h3 className="mr-auto text-xs font-semibold uppercase tracking-wider text-black/45">
@@ -165,6 +194,41 @@ export default function AnimeClipEditor({
               </button>
               <button
                 type="button"
+                disabled={!!redoing}
+                title="Transcribe and translate just this clip again (replaces its subtitles, including your edits)"
+                onClick={async () => {
+                  if (!confirm("Redo this clip's subtitles? This replaces its current subtitles, including your edits.")) return;
+                  setRedoing("Starting…");
+                  try {
+                    await importSubtitleFiles(jobId, {}, (d) => setRedoing(d), [clip.id]);
+                  } catch (e) {
+                    alert(`Couldn't redo the subtitles: ${(e as Error).message}`);
+                  } finally {
+                    setRedoing(null);
+                  }
+                }}
+                className="rounded-full border border-black/15 px-3 py-1 text-xs font-medium hover:border-black disabled:opacity-40"
+              >
+                {redoing ? "Redoing…" : "↻ Redo this clip"}
+              </button>
+              {data.subtitles.length > 0 && (
+                <span className="flex items-center gap-1 text-xs text-black/50" title="Move every subtitle of this clip earlier or later">
+                  Shift all
+                  {[-0.5, -0.1, 0.1, 0.5].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setSubs(data.subtitles.map((s) => ({ ...s, start: Math.max(0, s.start + d), end: Math.max(0.3, s.end + d) })))}
+                      className="rounded-full border border-black/15 px-2 py-0.5 font-medium tabular-nums text-black/70 hover:border-black"
+                    >
+                      {d > 0 ? "+" : "−"}
+                      {Math.abs(d)}s
+                    </button>
+                  ))}
+                </span>
+              )}
+              <button
+                type="button"
                 disabled={!data.subtitles.length}
                 onClick={exportJson}
                 className="rounded-full border border-black/15 px-3 py-1 text-xs font-medium hover:border-black disabled:opacity-40"
@@ -172,6 +236,7 @@ export default function AnimeClipEditor({
                 Download JSON
               </button>
             </div>
+            {redoing && <p className="mb-2 rounded-lg bg-black/5 px-3 py-2 text-xs text-black/60">{redoing}</p>}
             {!data.subtitles.length ? (
               <p className="rounded-xl border border-dashed border-black/15 px-4 py-6 text-center text-sm text-black/50">
                 No speech was recognised in this clip. Add lines at the playhead to subtitle it by hand.
@@ -186,7 +251,8 @@ export default function AnimeClipEditor({
                     outside={s.end <= clip.start || s.start >= clip.end}
                     onChange={(next) => setSubs(data.subtitles.map((x) => (x.id === s.id ? next : x)))}
                     onDelete={() => setSubs(data.subtitles.filter((x) => x.id !== s.id))}
-                    onSeek={() => player.current?.seek(Math.max(s.start, clip.start))}
+                    onSeek={() => player.current?.seek(Math.max(s.start + 0.05, clip.start))}
+                    playhead={now}
                   />
                 ))}
               </ul>

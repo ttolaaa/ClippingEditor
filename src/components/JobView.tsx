@@ -15,6 +15,7 @@ import ClipCard from "./ClipCard";
 import ClipEditor from "./ClipEditor";
 import AnimeClipEditor from "./AnimeClipEditor";
 import SubtitleImportPanel from "./SubtitleImportPanel";
+import GeminiQuotaBanner from "./GeminiQuotaBanner";
 
 type Filter = "all" | "twist" | `${number}`;
 type Sort = "match" | "score" | "time";
@@ -177,6 +178,7 @@ export default function JobView({ id }: { id: string }) {
         </div>
       )}
 
+      {isAnime && <GeminiQuotaBanner />}
       {isAnime && job.status === "ready" && job.clips.length > 0 && <SubtitleImportPanel job={job} />}
 
       {job.clips.length > 0 && (

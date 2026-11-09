@@ -50,22 +50,43 @@ export async function aiMomentsForChunk(segments: TranscriptSegment[], duration:
 
 export const TRANSLATE_MAX_OUTPUT = 4000;
 
-/** Translate numbered Japanese subtitle lines to natural English, keeping one output per input line. */
-export async function aiTranslateLines(lines: string[], usage?: UsageSink): Promise<string[]> {
-  const res = await chatJSON<{ translations?: { id: number; en: string }[] }>(
-    "You are a professional anime subtitle translator. Translate Japanese dialogue into natural, concise English subtitles " +
-      "that keep the speaker's tone. The lines are consecutive dialogue from one clip, so use earlier and later lines as context. " +
-      "Speech recognition may contain small errors; infer the intended meaning. Respond with JSON only.",
-    `Translate every line. Return {"translations":[{"id":number,"en":string}]} with exactly one entry per id.\n\nLines:\n${JSON.stringify(lines.map((text, id) => ({ id, text })))}`,
-    TRANSLATE_MAX_OUTPUT,
+/** Sanitise furigana pairs from the model: kanji words with kana-only readings, bounded size. */
+export function cleanRuby(x: unknown): { w: string; r: string }[] {
+  if (!Array.isArray(x)) return [];
+  return x
+    .slice(0, 40)
+    .map((p) => ({ w: String((p as { w?: unknown })?.w ?? "").trim().slice(0, 30), r: String((p as { r?: unknown })?.r ?? "").trim().slice(0, 60) }))
+    .filter((p) => /[\u3400-\u9fff\uf900-\ufaff\u3005]/.test(p.w) && /^[\u3041-\u309f\u30a0-\u30ffー]+$/.test(p.r));
+}
+
+/**
+ * Translate numbered Japanese subtitle lines to natural English, keeping one output per input line. With `readings`,
+ * also returns context-aware furigana pairs per line.
+ */
+export async function aiTranslateLines(lines: string[], usage?: UsageSink, readings = false): Promise<{ en: string[]; ruby: { w: string; r: string }[][] }> {
+  const res = await chatJSON<{ translations?: { id: number; en: string; ruby?: unknown }[] }>(
+    "You are a professional anime and film subtitle translator. Translate Japanese dialogue into accurate, natural, concise English subtitles " +
+      "that keep the speaker's meaning and tone. The lines are consecutive dialogue from one scene, so use earlier and later lines as context " +
+      "(who is speaking to whom, what was just said). Dialects such as Kansai-ben must be understood correctly (e.g. はる/はった is respectful, " +
+      "あかん = no good, ほんま = really). Keep names in romaji. Keep the speaker's own voice (first person stays first person; never rewrite a line as reported speech). Never add content that is not in the Japanese. " +
+      "The Japanese may come from speech recognition and contain small errors; infer the intended meaning. Respond with JSON only.",
+    readings
+      ? `Translate every line, and give its furigana: "ruby" lists every word of the line that contains kanji, in order, as {"w": the word exactly as written (with okurigana), "r": its hiragana reading as pronounced in this context, e.g. 一人→ひとり, 今日→きょう}. ` +
+          `Return {"translations":[{"id":number,"en":string,"ruby":[{"w":string,"r":string}]}]} with exactly one entry per id.\n\nLines:\n${JSON.stringify(lines.map((text, id) => ({ id, text })))}`
+      : `Translate every line. Return {"translations":[{"id":number,"en":string}]} with exactly one entry per id.\n\nLines:\n${JSON.stringify(lines.map((text, id) => ({ id, text })))}`,
+    readings ? TRANSLATE_MAX_OUTPUT * 2 : TRANSLATE_MAX_OUTPUT,
     usage,
   );
   const out = lines.map(() => "");
+  const ruby: { w: string; r: string }[][] = lines.map(() => []);
   for (const t of res?.translations ?? []) {
     const id = Number(t?.id);
-    if (Number.isInteger(id) && id >= 0 && id < out.length) out[id] = String(t.en ?? "").trim().slice(0, 400);
+    if (Number.isInteger(id) && id >= 0 && id < out.length) {
+      out[id] = String(t.en ?? "").trim().slice(0, 400);
+      if (readings) ruby[id] = cleanRuby(t.ruby);
+    }
   }
-  return out;
+  return { en: out, ruby };
 }
 
 export interface MetaItem {

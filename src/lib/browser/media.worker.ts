@@ -277,7 +277,14 @@ async function exportClip(req: Extract<WorkerRequest, { task: "export" }>) {
 
 async function exportAnime(req: Extract<WorkerRequest, { task: "anime-export" }>) {
   await exportWith(req, (ctx, src, t) =>
-    drawAnimeFrame(ctx, req.width, req.height, src, { layout: req.layout, background: req.background, subtitles: req.subtitles, t: req.start + t }),
+    drawAnimeFrame(ctx, req.width, req.height, src, {
+      layout: req.layout,
+      background: req.background,
+      romaji: req.romaji,
+      fontScale: req.fontScale,
+      subtitles: req.subtitles,
+      t: req.start + t,
+    }),
   );
 }
 

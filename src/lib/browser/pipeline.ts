@@ -45,14 +45,17 @@ export interface ServerCaps {
   cloudAI: boolean;
   aiModel: string | null;
   cloudTranscription: boolean;
-  /** The server has an OpenAI key at all. */
+  /** Gemini can listen to Japanese audio and return timed Japanese + English lines (Anime Clipper). */
+  cloudJapanese: boolean;
+  speechModel?: string | null;
+  /** The server has a cloud AI key at all. */
   cloudAvailable: boolean;
   accessRequired: boolean;
   budgetExhausted?: boolean;
 }
 
 const ACCESS_KEY = "clipping.aiAccessCode";
-const noCaps: ServerCaps = { cloudAI: false, aiModel: null, cloudTranscription: false, cloudAvailable: false, accessRequired: false };
+const noCaps: ServerCaps = { cloudAI: false, aiModel: null, cloudTranscription: false, cloudJapanese: false, cloudAvailable: false, accessRequired: false };
 
 export function getAccessCode(): string {
   try {
@@ -447,7 +450,17 @@ async function processJob(id: string) {
       trackingConfidence: Math.round(crop.confidence * 100) / 100,
       captions: groupWordsIntoLines(words, style.wordsPerLine),
       style,
-      ...(anime ? { anime: { layout: job.settings.anime?.layout ?? "both", background: job.settings.anime?.background ?? "blur", subtitles: [] } } : {}),
+      ...(anime
+        ? {
+            anime: {
+              layout: job.settings.anime?.layout ?? "both",
+              background: job.settings.anime?.background ?? "blur",
+              romaji: job.settings.anime?.romaji,
+              fontScale: job.settings.anime?.fontScale,
+              subtitles: [],
+            },
+          }
+        : {}),
       export: { status: "idle", progress: 0 },
     };
   });
@@ -505,61 +518,100 @@ const ANIME_HASHTAGS = ["#anime", "#animeclips", "#learnjapanese", "#japanese", 
  * otherwise from speech recognition (with an accurate second pass). English comes from the user's English file when it
  * has a line at that moment, otherwise from machine translation (flagged when uncertain).
  */
-async function buildAnimeSubtitles(id: string, transcript: Transcript, file: Blob) {
+async function buildAnimeSubtitles(id: string, transcript: Transcript, file: Blob, only?: string[]) {
   stage(id, "subtitle", { status: "active", detail: "Preparing subtitle lines" });
-  const [{ segmentJapanese, newSubtitleId }, { translateToEnglish, transcribeRanges, mergeRanges, reviewReason }, { annotateFurigana }, { cuesFor }] =
+  const [{ segmentJapanese, newSubtitleId, readableTiming }, { translateToEnglish, transcribeRanges, mergeRanges, reviewReason }, { furiganaFromPairs }, { cuesFor }] =
     await Promise.all([import("../anime/subtitles"), import("../anime/generate"), import("../anime/furigana"), import("../anime/subfile")]);
   const job = getJob(id)!;
-  const clips = job.clips;
+  const clips = only ? job.clips.filter((c) => only.includes(c.id)) : job.clips;
   const jaCues = job.settings.subtitleFiles?.ja ? ((await getData<Cue[]>(id, "subs-ja")) ?? []) : [];
   const enCues = job.settings.subtitleFiles?.en ? ((await getData<Cue[]>(id, "subs-en")) ?? []) : [];
   const inClips = (l: { start: number; end: number }) => clips.some((c) => l.end > c.start && l.start < c.end);
 
   let words = transcript.words;
   let lines: { start: number; end: number; text: string }[];
+  let cloudEn: string[] | null = null;
+  let readings: ({ w: string; r: string }[] | undefined)[] = [];
+  let retimed: boolean[] = [];
   if (jaCues.length) {
     lines = jaCues.filter(inClips).map((c) => ({ start: c.start, end: c.end, text: c.text }));
   } else {
     // Second pass: the quick scan only had to find good moments; re-transcribe just the picked clips with the accurate
     // model so the subtitles are as correct as possible (minutes of audio instead of the whole video).
-    const subModel = job.settings.subtitleModel;
-    if (subModel && subModel !== job.settings.whisperModel && clips.length) {
-      try {
-        const ranges = mergeRanges(clips, 1, job.source?.duration ?? Infinity);
-        const minutes = Math.max(1, Math.round(ranges.reduce((a, r) => a + r.end - r.start, 0) / 60));
-        words = await transcribeRanges(file, ranges, subModel, (detail, p) =>
-          stage(id, "subtitle", { detail: `Accurate subtitles (Whisper ${subModel}, ${minutes} min of clips): ${detail}`, progress: (p ?? 0) * 0.6 }),
-        );
-        updateJob(id, (j) => (j.engine = `${j.engine ?? ""} · subtitles: Whisper ${subModel}`));
-      } catch (e) {
-        console.error("Accurate re-transcription failed", e);
-        warn(id, `The accurate subtitle pass failed (${(e as Error).message.slice(0, 120)}), so subtitles use the quick scan.`);
-        words = transcript.words;
+    let subModel = job.settings.subtitleModel;
+    const ranges = clips.length ? mergeRanges(clips, 1, job.source?.duration ?? Infinity) : [];
+    const minutes = Math.max(1, Math.round(ranges.reduce((a, r) => a + r.end - r.start, 0) / 60));
+    let cloudLines: { start: number; end: number; text: string; en: string; ruby?: { w: string; r: string }[]; retimed?: boolean }[] | null = null;
+    if (subModel === "cloud" && ranges.length) {
+      const caps = await serverCaps();
+      if (!caps.cloudJapanese) {
+        warn(id, "Cloud AI (Gemini) isn't available on this server right now, so the on-device Accurate model was used for the subtitles.");
+      } else {
+        try {
+          const { transcribeCloudJapanese } = await import("../anime/cloud-speech");
+          cloudLines = await transcribeCloudJapanese(
+            file,
+            ranges,
+            (detail, p) => stage(id, "subtitle", { detail: `Cloud AI subtitles (${caps.speechModel ?? "Gemini"}, ${minutes} min of clips): ${detail}`, progress: (p ?? 0) * 0.8 }),
+            job.name,
+            transcript.words,
+          );
+          const tag = ` · subtitles: ${caps.speechModel ?? "Gemini"} (cloud)`;
+          updateJob(id, (j) => (j.engine = (j.engine ?? "").replace(/ · subtitles: [^·]+/g, "") + tag));
+        } catch (e) {
+          console.error("Cloud subtitles failed", e);
+          warn(id, `Cloud AI subtitles failed (${(e as Error).message.slice(0, 160)}), so the on-device Accurate model was used instead.`);
+        }
       }
+      if (!cloudLines) subModel = "small";
     }
-    lines = segmentJapanese(words).filter(inClips);
+    if (cloudLines) {
+      const kept = cloudLines.filter(inClips);
+      console.info(`[cloud-speech] ${cloudLines.length} lines from cloud AI, ${kept.length} inside the clips`);
+      lines = kept;
+      cloudEn = kept.map((l) => l.en);
+      readings = kept.map((l) => l.ruby);
+      retimed = kept.map((l) => !!l.retimed);
+    } else {
+      if (subModel && subModel !== "cloud" && subModel !== job.settings.whisperModel && ranges.length) {
+        try {
+          words = await transcribeRanges(file, ranges, subModel, (detail, p) =>
+            stage(id, "subtitle", { detail: `Accurate subtitles (Whisper ${subModel}, ${minutes} min of clips): ${detail}`, progress: (p ?? 0) * 0.6 }),
+          );
+          updateJob(id, (j) => (j.engine = `${j.engine ?? ""} · subtitles: Whisper ${subModel}`));
+        } catch (e) {
+          console.error("Accurate re-transcription failed", e);
+          warn(id, `The accurate subtitle pass failed (${(e as Error).message.slice(0, 120)}), so subtitles use the quick scan.`);
+          words = transcript.words;
+        }
+      }
+      lines = segmentJapanese(words).filter(inClips);
+    }
   }
   if (!lines.length) {
     stage(id, "subtitle", { status: "skipped", detail: "No Japanese speech inside the clips" });
-    if (transcript.words.length) warn(id, "No speech was found inside the picked clips, so they have no subtitles. You can add lines in the editor.");
+    if (transcript.words.length || cloudEn) warn(id, "No speech was found inside the picked clips, so they have no subtitles. You can add lines in the editor.");
     return;
   }
 
-  // English: the user's file first, machine translation only for lines it doesn't cover.
-  const english: string[] = lines.map((l) => (enCues.length ? cuesFor(enCues, l.start, l.end) : ""));
-  const fromFile = english.map((t) => !!t);
+  // English: the user's file first, then the cloud model's translation from the audio, translation for the rest.
+  const english: string[] = lines.map((l, i) => (enCues.length ? cuesFor(enCues, l.start, l.end) : "") || cloudEn?.[i] || "");
+  const fromFile = lines.map((l) => !!(enCues.length && cuesFor(enCues, l.start, l.end)));
+  const fromCloud = english.map((t, i) => !fromFile[i] && !!t);
   let uncertain: boolean[] = lines.map(() => false);
   const missing = lines.map((_, i) => i).filter((i) => !english[i]);
   if (missing.length) {
     try {
       const tr = await translateToEnglish(
         missing.map((i) => lines[i].text),
-        (detail, p) => stage(id, "subtitle", { detail, progress: 0.6 + (p ?? 0) * 0.3 }),
+        (detail, p) => stage(id, "subtitle", { detail, progress: 0.8 + (p ?? 0) * 0.1 }),
       );
       uncertain = lines.map(() => false);
       missing.forEach((i, j) => {
         english[i] = tr.translations[j] ?? "";
         uncertain[i] = tr.uncertain[j] ?? !english[i];
+        fromCloud[i] = tr.fromCloud[j] ?? false;
+        readings[i] ??= tr.ruby[j];
       });
       if (tr.note) warn(id, tr.note);
     } catch (e) {
@@ -569,23 +621,34 @@ async function buildAnimeSubtitles(id: string, transcript: Transcript, file: Blo
     }
   }
 
-  // Lines the quick scan heard very differently are likely misheard by one of the passes (not relevant for file text).
-  const scanWords = !jaCues.length && words !== transcript.words ? transcript.words : undefined;
+  // Lines the quick scan heard very differently are likely misheard by one of the passes (not relevant for file text
+  // or cloud text — the base-model scan disagrees with good transcripts too often to be a useful signal there).
+  const scanWords = !jaCues.length && !cloudEn && words !== transcript.words ? transcript.words : undefined;
   const subs: AnimeSubtitle[] = [];
   for (let i = 0; i < lines.length; i++) {
     let ja: AnimeSubtitle["ja"] = [{ text: lines[i].text }];
     try {
-      ja = await annotateFurigana(lines[i].text);
+      ja = await furiganaFromPairs(lines[i].text, readings[i]);
     } catch (e) {
       if (i === 0) warn(id, `Furigana could not be added (${(e as Error).message.slice(0, 120)}).`);
     }
     const en = english[i] ?? "";
     let review: string | undefined;
-    if (!jaCues.length) review = await reviewReason(lines[i], en, !fromFile[i] && (uncertain[i] ?? false), scanWords);
+    if (!jaCues.length && !cloudEn) review = await reviewReason(lines[i], en, !fromFile[i] && (uncertain[i] ?? false), scanWords);
     else if (!en) review = "Check: no reliable English — please type it";
-    else if (!fromFile[i] && uncertain[i]) review = "Check: translation was uncertain";
-    subs.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja, en, enSource: fromFile[i] ? "file" : "machine", ...(review ? { review } : {}) });
+    else if (!fromFile[i] && !fromCloud[i] && uncertain[i]) review = "Check: translation was uncertain";
+    if (retimed[i]) review = review ? `${review}; timing was estimated — check when it appears` : "Check: timing was estimated — check when it appears";
+    subs.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja, en, enSource: fromFile[i] ? "file" : fromCloud[i] ? "cloud" : "machine", ...(review ? { review } : {}) });
     stage(id, "subtitle", { detail: "Adding furigana", progress: 0.9 + 0.1 * ((i + 1) / lines.length) });
+  }
+  // Speech-accurate starts, subtitle-style durations (your own subtitle files keep their authored timing).
+  if (!jaCues.length) subs.splice(0, subs.length, ...readableTiming(subs));
+  // Romaji is made now so the "Romaji" option is instant later (the dictionary is already loaded for furigana).
+  try {
+    const { withRomaji } = await import("../anime/romaji");
+    subs.splice(0, subs.length, ...(await withRomaji(subs)));
+  } catch {
+    // romaji is optional: it's made later in the editor if needed
   }
   const toReview = subs.filter((s) => s.review).length;
   if (toReview) warn(id, `${toReview} of ${subs.length} subtitle lines are marked “Needs review” (possible mishearing or uncertain translation). Check them in each clip's editor.`);
@@ -593,6 +656,7 @@ async function buildAnimeSubtitles(id: string, transcript: Transcript, file: Blo
   updateJob(id, (j) => {
     const titles = new Set<string>();
     for (const c of j.clips) {
+      if (only && !only.includes(c.id)) continue;
       const own = subs.filter((s) => s.end > c.start && s.start < c.end);
       c.anime = { ...(c.anime ?? { layout: "both", background: "blur" }), subtitles: own.map((s) => ({ ...s, id: newSubtitleId() })) };
       // English titles read better than the Japanese transcript on the clip grid.
@@ -620,7 +684,7 @@ async function buildAnimeSubtitles(id: string, transcript: Transcript, file: Blo
  * Import subtitle/transcript files into an existing Anime project: the clip subtitles are rebuilt from them (Japanese
  * file → exact Japanese; English file → English for matching lines; machine translation fills the rest).
  */
-export async function importSubtitleFiles(jobId: string, cues: { ja?: Cue[]; en?: Cue[] }, onStatus?: (detail: string) => void) {
+export async function importSubtitleFiles(jobId: string, cues: { ja?: Cue[]; en?: Cue[] }, onStatus?: (detail: string) => void, only?: string[]) {
   const job = getJob(jobId);
   if (!job) throw new Error("Project not found");
   const file = await getBlob(jobId, "source");
@@ -634,14 +698,14 @@ export async function importSubtitleFiles(jobId: string, cues: { ja?: Cue[]; en?
         ja: cues.ja?.length || j.settings.subtitleFiles?.ja,
         en: cues.en?.length || j.settings.subtitleFiles?.en,
       };
-      j.warnings = j.warnings.filter((w) => !/Needs review/.test(w));
+      j.warnings = j.warnings.filter((w) => !/Needs review|Cloud AI subtitles failed|accurate subtitle pass failed|Cloud AI .* isn't available/.test(w));
     },
     true,
   );
   const transcript = cues.ja?.length ? transcriptFromCues(cues.ja) : ((await getData<Transcript>(jobId, "transcript")) ?? { provider: "none", words: [], segments: [] });
   const stop = onStatus ? watchStage(jobId, "subtitle", onStatus) : () => undefined;
   try {
-    await buildAnimeSubtitles(jobId, transcript, file);
+    await buildAnimeSubtitles(jobId, transcript, file, only);
   } finally {
     stop();
     updateJob(jobId, (j) => {
@@ -846,7 +910,7 @@ async function renderClip(jobId: string, clipId: string, signal?: AbortSignal): 
     const common = { file, start: clip.start, end: clip.end, width: 1080, height: 1920, audio };
     const res = await runMediaTask(
       clip.anime
-        ? { task: "anime-export", ...common, layout: clip.anime.layout, background: clip.anime.background, subtitles: clip.anime.subtitles }
+        ? { task: "anime-export", ...common, layout: clip.anime.layout, background: clip.anime.background, romaji: clip.anime.romaji, fontScale: clip.anime.fontScale, subtitles: clip.anime.subtitles }
         : { task: "export", ...common, mode: clip.reframeMode, crop: clip.crop, captions: clip.captions, style: clip.style },
       "export",
       (m) => m.type === "progress" && updateClip(jobId, clipId, (c) => (c.export = { status: "rendering", progress: m.value as number })),

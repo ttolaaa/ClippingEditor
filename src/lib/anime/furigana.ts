@@ -144,3 +144,41 @@ export async function annotateFurigana(text: string): Promise<RubySegment[]> {
   // compact() merges plain segments, so overrides see the dictionary's word boundaries first.
   return compact(applyReadingOverrides(segs));
 }
+
+/** A kanji word and its reading in context, as given by the cloud model. */
+export interface ReadingPair {
+  w: string;
+  r: string;
+}
+
+const KANA_ONLY = /^[\u3041-\u309f\u30a0-\u30ffー]+$/;
+
+/**
+ * Furigana from context-aware readings (cloud AI), with the dictionary as fallback: each pair is located in order in the
+ * text and aligned so okurigana stays plain; kanji the pairs don't cover are annotated by the dictionary. Pairs that
+ * don't match the text, or whose reading isn't pure kana, are ignored.
+ */
+export async function furiganaFromPairs(text: string, pairs: ReadingPair[] | undefined): Promise<RubySegment[]> {
+  const clean = text.trim();
+  if (!clean) return [];
+  if (!hasKanji(clean)) return [{ text: clean }];
+  const good = (pairs ?? []).filter((p) => p && typeof p.w === "string" && typeof p.r === "string" && hasKanji(p.w) && KANA_ONLY.test(p.r.trim()));
+  if (!good.length) return annotateFurigana(clean);
+  const out: RubySegment[] = [];
+  let cursor = 0;
+  const plain = async (s: string) => {
+    if (s) out.push(...(hasKanji(s) ? await annotateFurigana(s).catch(() => [{ text: s }]) : [{ text: s }]));
+  };
+  for (const p of good) {
+    const at = clean.indexOf(p.w, cursor);
+    if (at < 0) continue;
+    await plain(clean.slice(cursor, at));
+    const segs = alignReading(p.w, p.r.trim());
+    // A reading that can't be aligned to the word's kana (likely wrong) is left to the dictionary instead.
+    if (segs.length === 1 && segs[0].ruby && /[\u3041-\u309f\u30a0-\u30ff]/.test(p.w)) await plain(p.w);
+    else out.push(...segs);
+    cursor = at + p.w.length;
+  }
+  await plain(clean.slice(cursor));
+  return compact(out);
+}

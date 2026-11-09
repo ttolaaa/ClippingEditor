@@ -205,6 +205,10 @@ Speech recognition and on-device translation can't be perfect (see below). If yo
 
 **Letterbox fill** is either a blurred copy of the video or a solid dark colour.
 
+**Romaji** (optional) adds the reading in Latin letters under the Japanese, for example 私は学生です → *watashi wa gakusei desu*. It follows the line's furigana, has spaces between words, and reads particles the spoken way (は → wa, へ → e, を → o). It's made automatically and updates when you edit a line.
+
+**Text size** (70–150%, or A− / A+) scales all subtitle text. Very long lines still shrink to fit the space below the video. Both settings are per clip, apply to the preview and the exported MP4, and can be set as defaults when you start an auto project.
+
 ### Speech recognition quality
 
 Auto mode works in two passes: a quick model scans the whole video to find the best moments, then **only the picked clips are re-transcribed with an accurate model** for the subtitles (minutes of audio instead of the whole film).
@@ -214,8 +218,24 @@ Auto mode works in two passes: a quick model scans the whole video to find the b
 | **Fast** | Whisper tiny / base | ~120 MB | Quick drafts; rougher subtitles |
 | **Balanced** (default) | Whisper base / small | ~330 MB | Accurate subtitles at a reasonable speed |
 | **Best** | Whisper base / **large-v3-turbo** | ~800 MB | The most accurate Japanese the browser can do; slowest |
+| **Cloud AI (Gemini)** | Whisper base / **Gemini** | ~80 MB | **Most accurate.** Shown, and selected by default, when the server has a `GEMINI_API_KEY` (see [Cloud AI with Gemini](#cloud-ai-with-gemini-most-accurate)) |
 
-Manual mode transcribes one range with the model you pick: **Fast** (tiny), **Balanced** (base), **Accurate** (small, default) or **Best (large)** (large-v3-turbo, 4-bit, ~720 MB).
+Manual mode transcribes one range with the model you pick: **Fast** (tiny), **Balanced** (base), **Accurate** (small, default), **Best (large)** (large-v3-turbo, 4-bit, ~720 MB) or **Cloud AI (Gemini)** when the server has a Gemini key.
+
+#### Cloud AI with Gemini (most accurate)
+
+Services such as Vocova transcribe Japanese well because they run large AI models on servers. With a Gemini key on the server, the Anime Clipper does the same for the subtitles:
+
+1. A quick on-device scan still analyses the whole video and picks the viral clips, so no audio leaves the browser for this step.
+2. **Exact timing from your device, text from Gemini.** The on-device voice detector (Silero VAD, which ignores music and effects) finds every stretch of speech in the picked clips. Only those snippets are sent to Gemini through the app's server (`/api/ai/anime-transcribe`), numbered and in batches of up to about 90 seconds of speech, with the previous lines as context. Gemini writes the text for each snippet; **the timing comes from the voice detector, never from the model**. If one snippet holds two sentences, they share its time in proportion to their length.
+3. Gemini writes the Japanese the way a subtitler would: correct kanji from context, with dialect kept as spoken. It also translates each line **from the audio, with the scene's context** (tone, who is speaking). This avoids the line-by-line mistakes of the small on-device translator.
+4. Gemini also gives the **furigana in context**: a reading for every kanji word as it's actually pronounced there (一人→ひとり, 今日→きょう, 後で→あとで), where a dictionary would have to guess. Each reading is checked: it must be kana and match the word in the line, and okurigana stays plain (食べる → 食 gets た). The on-device dictionary fills in anything missing or rejected. Translating a Japanese subtitle file with Gemini returns the same context readings.
+5. Subtitles stay up long enough to read the English, and short pauses are bridged. If voice detection fails, the app falls back to Gemini's own timestamps. Those are repaired (broken ones are re-anchored to the on-device scan) and snapped to the voice, and the lines are marked **Needs review** when the timing had to be estimated.
+6. If Gemini fails (quota, network), the clip falls back to the on-device Accurate model automatically, and a warning says so.
+
+To transcribe a finished project's clips again (for example after adding a Gemini key, or after an app update), press **Redo subtitles** on the project page. This replaces the current subtitles, including your edits.
+
+Your own subtitle files still come first: a Japanese file skips speech recognition, and an English file overrides the English. With a Gemini key and no OpenAI key, the other cloud text features (viral-moment analysis, titles, translating a Japanese subtitle file) also use Gemini. Each line's English is labelled *cloud AI translation from the audio*. Set it up in [Optional: cloud AI](#optional-cloud-ai-envlocal).
 
 The first run also downloads the voice detector (~2 MB), the translation model (~110 MB) and the furigana dictionary (~18 MB); after that everything is cached. Model downloads retry automatically if the network drops.
 
@@ -284,7 +304,8 @@ Export renders the clip with the subtitles burned in (H.264 video, AAC audio). Y
 | Speech to Japanese text | Web Worker | Whisper (tiny / base / small, language fixed to Japanese) via transformers.js, speech windows only, plus the hallucination filter |
 | Splitting into subtitle lines | Browser | Sentence ends, pauses and length limits; loops, phantom and filler-only lines are removed (`src/lib/anime/subtitles.ts`) |
 | Japanese → English | Web Worker (default) | `Xenova/opus-mt-ja-en` with dialect normalisation, name protection, fixed phrases and output checks (`src/lib/browser/translate.worker.ts`) |
-| Japanese → English (optional) | Server proxy | GPT via `/api/ai/translate` when `OPENAI_API_KEY` is set. Falls back to the on-device model if it's refused or fails |
+| Japanese → English (optional) | Server proxy | GPT or Gemini via `/api/ai/translate` when `OPENAI_API_KEY` or `GEMINI_API_KEY` is set. Falls back to the on-device model if it's refused or fails |
+| Japanese speech → Japanese + English (optional) | Server proxy | Gemini via `/api/ai/anime-transcribe` when `GEMINI_API_KEY` is set (picked clips only; ~90 s audio pieces; timings snapped to the voice, `src/lib/anime/cloud-speech.ts`) |
 | Furigana | Browser | [kuromoji](https://github.com/sglkc/kuromoji.js) morphological analysis, readings aligned to the kanji (`src/lib/anime/furigana.ts`, `ruby.ts`; dictionary self-hosted in `public/kuromoji-dict`) |
 | Preview and export | Browser / Web Worker | One shared canvas renderer (`src/lib/anime/renderer.ts`) + Mediabunny (H.264 + AAC) |
 
@@ -375,6 +396,20 @@ OPENAI_BASE_URL=             # optional OpenAI-compatible endpoint
 ```
 
 The key stays on the server, and the browser goes through the `/api/ai/*` proxy. GPT receives only the transcript **text** (in Anime Clipper: the recognised Japanese lines, for translation). Audio is sent to the server only if you pick "Cloud Whisper API".
+
+**Gemini (recommended for Anime Clipper).** Get a key at [Google AI Studio](https://aistudio.google.com/apikey) and add it to `.env.local`:
+
+```bash
+GEMINI_API_KEY=AIza...
+GEMINI_MODEL=gemini-3.8-flash            # optional; any Gemini model that accepts audio
+GEMINI_FALLBACK_MODEL=gemini-3.5-flash   # optional; used when the main model is overloaded
+```
+
+When the main model is overloaded, the app switches to the fallback model instead of waiting. In testing, an overloaded `gemini-3.8-flash` took up to ~4 minutes per request, while `gemini-3.5-flash` answered in about 5 seconds with the same text. The fallback's timestamps are rougher: it packs the lines back-to-back from 0:00. When the app sees that pattern, it re-times the lines over the detected speech (within about 0.2 s in testing on clean speech). In films, music and effects are as loud as voices, so those lines are marked **Needs review: timing was estimated**. Good timestamps are never re-timed, and no line stays on screen much longer than it takes to say.
+
+The dev server reloads `.env.local` by itself; restart a production server after changing it. This enables **Cloud AI (Gemini)** in Anime Clipper. When it's selected, the audio of the picked clips (not the whole video) is sent to Gemini. If both keys are set, OpenAI handles the text features and Gemini handles Japanese speech. The same guard limits below apply to both; Gemini audio counts towards `AI_DAILY_AUDIO_MINUTES` / `AI_CLIENT_DAILY_AUDIO_MINUTES`. Google's free tier has its own per-minute and per-day request limits. In testing it was only **20 requests a day per model**, which a single feature film can use up. When Gemini is busy, the app waits and retries, then falls back to on-device recognition. When the daily quota is used up, it says so (with the reset time) instead of retrying. For long films, use a paid Gemini plan.
+
+**Daily limit notice.** The Anime Clipper home page and anime project pages show how many Gemini requests are left today. Google doesn't report the remaining quota, so the app counts its own requests (set your plan's limit with `GEMINI_DAILY_LIMIT`, default 20). When the limit is used up, the notice says when it's available again, with a countdown, and offers **🔔 Notify me when it's back**, which sends a desktop notification. The app then stops calling that model until it resets, so no time or quota is wasted. When the quota resets (midnight US Pacific time, or the exact time Google reports), a green **Gemini is available again** notice appears.
 
 #### Protecting your OpenAI credit on a public site
 

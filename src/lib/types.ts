@@ -210,7 +210,7 @@ export interface JobSettings {
   /** Only transcribe detected speech (voice activity detection) — avoids hallucinated text over music/silence. */
   vad?: boolean;
   /** Anime Clipper: re-transcribe the picked clips with this (more accurate) model for the subtitles. */
-  subtitleModel?: "tiny" | "base" | "small" | "large";
+  subtitleModel?: "tiny" | "base" | "small" | "large" | "cloud";
   /** Anime Clipper: subtitle/transcript files the user uploaded (cue counts; the cues are stored as job data). */
   subtitleFiles?: { ja?: number; en?: number };
   rules?: ClipRules;

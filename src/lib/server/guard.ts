@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { config } from "./config";
+import { cloudConfigured } from "./config";
 
 /**
  * Abuse protection for the optional OpenAI proxy (/api/ai/*), so a public deployment can't be used to
@@ -155,7 +155,7 @@ export interface Lease {
  * with `lease.settle()` afterwards. Returns a NextResponse to send back when the request is refused.
  */
 export function admit(req: Request, kind: AiKind, estimate: { tokens?: number; audioMin?: number }): Lease | NextResponse {
-  if (!config.openaiKey) return NextResponse.json({ error: "Cloud AI is not configured" }, { status: 501 });
+  if (!cloudConfigured()) return NextResponse.json({ error: "Cloud AI is not configured" }, { status: 501 });
   rollDay();
   if (!sameSite(req)) return deny(403, "Cross-site requests are not allowed");
   if (!checkAccessCode(req.headers.get("x-ai-access-code"))) return deny(401, "Cloud AI requires an access code", { code: "access_code" });

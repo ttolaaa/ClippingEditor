@@ -14,6 +14,22 @@ export default function SubtitleImportPanel({ job }: { job: Job }) {
   const [error, setError] = useState<string | null>(null);
   const used = job.settings.subtitleFiles;
 
+  const redo = async () => {
+    if (!confirm("Redo the subtitles of every clip? This replaces the current subtitles, including your edits.")) return;
+    setBusy(true);
+    setError(null);
+    setStatus("Redoing subtitles…");
+    try {
+      await importSubtitleFiles(job.id, {}, (d) => setStatus(d));
+      setStatus("✓ Subtitles redone. Your previous edits in the clip editors were replaced.");
+    } catch (e) {
+      setError((e as Error).message);
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const apply = async () => {
     const cues = cuesFromEntries(files);
     if (!cues.ja && !cues.en) return;
@@ -47,9 +63,20 @@ export default function SubtitleImportPanel({ job }: { job: Job }) {
           </p>
         </div>
         {!open && (
-          <button type="button" onClick={() => setOpen(true)} disabled={busy} className="rounded-full border border-black/15 px-4 py-1.5 text-sm font-medium hover:border-black disabled:opacity-40">
-            Import subtitles
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={redo}
+              disabled={busy}
+              title="Transcribe and translate the clips again (uses Cloud AI when it's available)"
+              className="rounded-full border border-black/15 px-4 py-1.5 text-sm font-medium hover:border-black disabled:opacity-40"
+            >
+              {busy ? "Working…" : "Redo subtitles"}
+            </button>
+            <button type="button" onClick={() => setOpen(true)} disabled={busy} className="rounded-full border border-black/15 px-4 py-1.5 text-sm font-medium hover:border-black disabled:opacity-40">
+              Import subtitles
+            </button>
+          </>
         )}
       </div>
       {open && (

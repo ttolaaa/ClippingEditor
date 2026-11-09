@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { cx, formatBytes } from "@/lib/client";
-import { createProject } from "@/lib/browser/pipeline";
+import { createProject, serverCaps } from "@/lib/browser/pipeline";
 import { ANIME_QUALITY, type AnimeQuality } from "@/lib/anime/generate";
 import type { BackgroundMode, SubtitleLayout } from "@/lib/anime/types";
 import { Chip, LayoutPicker } from "./AnimeControls";
@@ -28,9 +28,24 @@ export default function AnimeAutoPanel() {
   const [durations, setDurations] = useState<number[]>([30, 60, 120]);
   const [perLength, setPerLength] = useState(3);
   const [quality, setQuality] = useState<AnimeQuality>("balanced");
+  const [cloudModel, setCloudModel] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    serverCaps().then((c) => {
+      if (!alive || !c.cloudJapanese) return;
+      setCloudModel(c.speechModel ?? "Gemini");
+      setQuality((q) => (q === "balanced" ? "cloud" : q));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const qualities = (Object.keys(ANIME_QUALITY) as AnimeQuality[]).filter((q) => q !== "cloud" || cloudModel);
   const [subFiles, setSubFiles] = useState<SubFileEntry[]>([]);
   const [layout, setLayout] = useState<SubtitleLayout>("both");
   const [background, setBackground] = useState<BackgroundMode>("blur");
+  const [romaji, setRomaji] = useState(false);
+  const [fontScale, setFontScale] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +66,7 @@ export default function AnimeAutoPanel() {
     try {
       const id = await createProject(file, {
         kind: "anime",
-        anime: { layout, background },
+        anime: { layout, background, romaji, fontScale },
         durations,
         maxClipsPerDuration: perLength,
         captionPreset: "bold",
@@ -146,15 +161,24 @@ export default function AnimeAutoPanel() {
         </Field>
         <Field label="Japanese speech recognition">
           <div className="flex flex-wrap items-center gap-2">
-            {(Object.keys(ANIME_QUALITY) as AnimeQuality[]).map((q) => (
+            {qualities.map((q) => (
               <Chip key={q} active={quality === q} onClick={() => setQuality(q)} title={ANIME_QUALITY[q].note}>
                 {ANIME_QUALITY[q].label}
               </Chip>
             ))}
           </div>
           <p className="mt-1.5 text-xs text-black/45">
-            {ANIME_QUALITY[quality].note}. Music and silence are skipped (only speech is transcribed), then the picked clips are re-transcribed with
-            Whisper {ANIME_QUALITY[quality].subtitles} for the subtitles.
+            {quality === "cloud" ? (
+              <>
+                {ANIME_QUALITY.cloud.note}. A quick on-device scan finds the viral moments, then the picked clips&apos; audio (only those minutes) is sent
+                to {cloudModel}, which writes the Japanese and translates it with the scene&apos;s context.
+              </>
+            ) : (
+              <>
+                {ANIME_QUALITY[quality].note}. Music and silence are skipped (only speech is transcribed), then the picked clips are re-transcribed with
+                Whisper {ANIME_QUALITY[quality].subtitles} for the subtitles.
+              </>
+            )}
           </p>
         </Field>
         <Field label="Subtitles">
@@ -172,7 +196,16 @@ export default function AnimeAutoPanel() {
         </div>
         <div className="md:col-span-2">
           <Field label="Default subtitle layout (can be changed per clip)">
-            <LayoutPicker layout={layout} background={background} onLayout={setLayout} onBackground={setBackground} />
+            <LayoutPicker
+              layout={layout}
+              background={background}
+              onLayout={setLayout}
+              onBackground={setBackground}
+              romaji={romaji}
+              onRomaji={setRomaji}
+              fontScale={fontScale}
+              onFontScale={setFontScale}
+            />
           </Field>
         </div>
       </div>

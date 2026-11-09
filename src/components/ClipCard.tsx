@@ -49,6 +49,8 @@ export default function ClipCard({
                 end={clip.end}
                 layout={clip.anime.layout}
                 background={clip.anime.background}
+                romaji={clip.anime.romaji}
+                fontScale={clip.anime.fontScale}
                 subtitles={clip.anime.subtitles}
                 muted
                 autoPlay

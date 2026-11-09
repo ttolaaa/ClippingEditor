@@ -4,8 +4,8 @@ import { normalizeWords } from "../engine/transcript";
 import { aiHeaders, serverCaps } from "../browser/pipeline";
 import { runMediaTask, canPlayInVideoElement } from "../browser/workers";
 import type { ProbeInfo } from "../browser/media.worker";
-import { annotateFurigana } from "./furigana";
-import { newSubtitleId, segmentJapanese } from "./subtitles";
+import { furiganaFromPairs } from "./furigana";
+import { newSubtitleId, readableTiming, segmentJapanese } from "./subtitles";
 import type { AnimeSubtitle, BackgroundMode, SubtitleLayout } from "./types";
 
 export const ANIME_WHISPER_MODELS = {
@@ -24,7 +24,8 @@ export const ANIME_QUALITY = {
   fast: { label: "Fast", scan: "tiny", subtitles: "base", note: "~120 MB · quickest, rougher subtitles" },
   balanced: { label: "Balanced", scan: "base", subtitles: "small", note: "~330 MB · accurate subtitles (recommended)" },
   best: { label: "Best", scan: "base", subtitles: "large", note: "~800 MB · large Whisper for the subtitles, slowest" },
-} as const satisfies Record<string, { label: string; scan: Exclude<AnimeWhisperModel, "large">; subtitles: AnimeWhisperModel; note: string }>;
+  cloud: { label: "Cloud AI (Gemini)", scan: "base", subtitles: "cloud", note: "Most accurate · Gemini listens to the picked clips and translates them" },
+} as const satisfies Record<string, { label: string; scan: Exclude<AnimeWhisperModel, "large">; subtitles: AnimeWhisperModel | "cloud"; note: string }>;
 export type AnimeQuality = keyof typeof ANIME_QUALITY;
 
 export type Status = (detail: string, progress?: number) => void;
@@ -162,25 +163,27 @@ const CLOUD_BATCH = 40;
 export async function translateToEnglish(
   lines: string[],
   onStatus: Status,
-): Promise<{ translations: string[]; uncertain: boolean[]; provider: "cloud" | "browser"; note?: string }> {
+): Promise<{ translations: string[]; uncertain: boolean[]; provider: "cloud" | "browser"; note?: string; fromCloud: boolean[]; ruby: ({ w: string; r: string }[] | undefined)[] }> {
   const out = lines.map(() => "");
+  const ruby: ({ w: string; r: string }[] | undefined)[] = lines.map(() => undefined);
   const uncertain = lines.map(() => false);
   let note: string | undefined;
   let usedCloud = false;
   const caps = await serverCaps();
   if (caps.cloudAI) {
     for (let i = 0; i < lines.length; i += CLOUD_BATCH) {
-      onStatus("Translating with cloud AI (text only)…", i / lines.length);
+      onStatus(`Translating with cloud AI${caps.aiModel ? ` (${caps.aiModel})` : ""}…`, i / lines.length);
       const batch = lines.slice(i, i + CLOUD_BATCH);
       try {
-        const res = await fetch("/api/ai/translate", { method: "POST", headers: aiHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ lines: batch }) });
+        const res = await fetch("/api/ai/translate", { method: "POST", headers: aiHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ lines: batch, readings: true }) });
         if (!res.ok) {
           const d = (await res.json().catch(() => ({}))) as { error?: string };
           note = `Cloud translation unavailable (${d.error ?? res.status}) — used the on-device model instead.`;
           break;
         }
-        const d = (await res.json()) as { translations: string[] };
+        const d = (await res.json()) as { translations: string[]; ruby?: { w: string; r: string }[][] };
         d.translations.forEach((t, j) => (out[i + j] = t));
+        d.ruby?.forEach((r, j) => (ruby[i + j] = r?.length ? r : undefined));
         usedCloud = true;
       } catch {
         note = "Cloud translation failed — used the on-device model instead.";
@@ -188,6 +191,7 @@ export async function translateToEnglish(
       }
     }
   }
+  const fromCloud = out.map((t) => !!t.trim());
   const missing = out.map((t, i) => (t.trim() ? -1 : i)).filter((i) => i >= 0);
   if (missing.length) {
     const local = await translateLocal(
@@ -199,7 +203,7 @@ export async function translateToEnglish(
       uncertain[i] = local.uncertain[j] ?? !out[i];
     });
   }
-  return { translations: out, uncertain, provider: usedCloud && !missing.length ? "cloud" : "browser", note };
+  return { translations: out, uncertain, provider: usedCloud && !missing.length ? "cloud" : "browser", note, fromCloud, ruby };
 }
 
 /**
@@ -255,8 +259,10 @@ export interface GenerateOptions {
   file: Blob;
   start: number;
   end: number;
-  whisperModel: AnimeWhisperModel;
+  whisperModel: AnimeWhisperModel | "cloud";
   onStatus: Status;
+  /** Video name, given to the cloud model as context. */
+  title?: string;
 }
 
 export interface GenerateResult {
@@ -273,21 +279,50 @@ export async function generateSubtitles(o: GenerateOptions): Promise<GenerateRes
   const warnings: string[] = [];
   const stage = (label: string, from: number, to: number): Status => (detail, p) => o.onStatus(detail || label, p === undefined ? undefined : from + (to - from) * p);
 
-  const words = await transcribeRanges(o.file, [{ start: o.start, end: o.end }], o.whisperModel, stage("Recognising Japanese speech…", 0, 0.55));
-  const lines = segmentJapanese(words);
+  let lines: { start: number; end: number; text: string }[] = [];
+  let cloudEn: string[] | null = null;
+  let readings: ({ w: string; r: string }[] | undefined)[] = [];
+  let retimed: boolean[] = [];
+  if (o.whisperModel === "cloud") {
+    try {
+      const { transcribeCloudJapanese } = await import("./cloud-speech");
+      const heard = await transcribeCloudJapanese(o.file, [{ start: o.start, end: o.end }], stage("Cloud AI is listening…", 0, 0.85), o.title);
+      lines = heard;
+      cloudEn = heard.map((l) => l.en);
+      readings = heard.map((l) => l.ruby);
+      retimed = heard.map((l) => !!l.retimed);
+    } catch (e) {
+      warnings.push(`Cloud AI failed (${(e as Error).message.slice(0, 160)}), so the on-device Accurate model was used instead.`);
+    }
+  }
+  if (!cloudEn) {
+    const model = o.whisperModel === "cloud" ? "small" : o.whisperModel;
+    lines = segmentJapanese(await transcribeRanges(o.file, [{ start: o.start, end: o.end }], model, stage("Recognising Japanese speech…", 0, 0.55)));
+  }
   if (!lines.length) throw new Error("No Japanese speech was recognised in this range. Try the Accurate model or a different range.");
 
-  let tr: { translations: string[]; uncertain: boolean[]; provider: "cloud" | "browser"; note?: string } = {
-    translations: lines.map(() => ""),
-    uncertain: lines.map(() => true),
-    provider: "browser",
+  let tr: { translations: string[]; uncertain: boolean[]; provider: "cloud" | "browser"; note?: string; fromCloud: boolean[] } = {
+    translations: cloudEn ?? lines.map(() => ""),
+    uncertain: lines.map((_, i) => !cloudEn?.[i]),
+    provider: cloudEn ? "cloud" : "browser",
+    fromCloud: lines.map((_, i) => !!cloudEn?.[i]),
   };
+  const missing = lines.map((_, i) => i).filter((i) => !tr.translations[i]?.trim());
   try {
-    tr = await translateToEnglish(
-      lines.map((l) => l.text),
-      stage("Translating to English…", 0.55, 0.9),
-    );
-    if (tr.note) warnings.push(tr.note);
+    if (missing.length) {
+      const more = await translateToEnglish(
+        missing.map((i) => lines[i].text),
+        stage("Translating to English…", cloudEn ? 0.85 : 0.55, 0.9),
+      );
+      missing.forEach((i, j) => {
+        tr.translations[i] = more.translations[j] ?? "";
+        tr.uncertain[i] = more.uncertain[j] ?? !tr.translations[i];
+        tr.fromCloud[i] = more.fromCloud[j] ?? false;
+        readings[i] ??= more.ruby[j];
+      });
+      if (!cloudEn) tr = { ...tr, provider: more.provider };
+      if (more.note) warnings.push(more.note);
+    }
   } catch (e) {
     // Keep the recognised Japanese even if the translation model can't be loaded (e.g. a network failure).
     console.error("Translation failed", e);
@@ -301,23 +336,25 @@ export async function generateSubtitles(o: GenerateOptions): Promise<GenerateRes
     let ja: AnimeSubtitle["ja"] = [{ text: lines[i].text }];
     if (!furiganaFailed) {
       try {
-        ja = await annotateFurigana(lines[i].text);
+        ja = await furiganaFromPairs(lines[i].text, readings[i]);
       } catch (e) {
         furiganaFailed = true;
         warnings.push(`Furigana could not be added (${(e as Error).message.slice(0, 120)}). Use "Auto furigana" on a line to try again.`);
       }
     }
     const en = tr.translations[i] ?? "";
-    const review = await reviewReason(lines[i], en, tr.uncertain[i] ?? false);
-    subtitles.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja, en, enSource: "machine", ...(review ? { review } : {}) });
+    // Cloud lines: the model heard the audio itself, so only flag missing English; on-device lines get the full check.
+    let review = tr.fromCloud[i] ? (en ? undefined : "Check: no reliable English — please type it") : await reviewReason(lines[i], en, tr.uncertain[i] ?? false);
+    if (retimed[i]) review = review ? `${review}; timing was estimated — check when it appears` : "Check: timing was estimated — check when it appears";
+    subtitles.push({ id: newSubtitleId(), start: lines[i].start, end: lines[i].end, ja, en, enSource: tr.fromCloud[i] ? "cloud" : "machine", ...(review ? { review } : {}) });
     o.onStatus("Adding furigana…", 0.9 + 0.1 * ((i + 1) / lines.length));
   }
-  return { subtitles, translationProvider: tr.provider, warnings };
+  return { subtitles: readableTiming(subtitles), translationProvider: tr.provider, warnings };
 }
 
 /** Render the final 1080×1920 MP4 in a worker (WebCodecs) and return it. */
 export async function exportAnimeVideo(
-  o: { file: Blob; start: number; end: number; subtitles: AnimeSubtitle[]; layout: SubtitleLayout; background: BackgroundMode; hasAudio: boolean; audioFallback: boolean },
+  o: { file: Blob; start: number; end: number; subtitles: AnimeSubtitle[]; layout: SubtitleLayout; background: BackgroundMode; romaji?: boolean; fontScale?: number; hasAudio: boolean; audioFallback: boolean },
   onProgress: (f: number) => void,
   signal?: AbortSignal,
 ): Promise<Blob> {
@@ -328,7 +365,7 @@ export async function exportAnimeVideo(
   };
   const run = (audio?: { channels: Float32Array[]; sampleRate: number }) =>
     runMediaTask(
-      { task: "anime-export", file: o.file, start: o.start, end: o.end, width: 1080, height: 1920, layout: o.layout, background: o.background, subtitles: o.subtitles, audio },
+      { task: "anime-export", file: o.file, start: o.start, end: o.end, width: 1080, height: 1920, layout: o.layout, background: o.background, romaji: o.romaji, fontScale: o.fontScale, subtitles: o.subtitles, audio },
       "export",
       (m) => {
         if (m.type === "progress") onProgress(m.value as number);

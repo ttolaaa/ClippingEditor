@@ -1,6 +1,7 @@
 import { drawBlurBackground, type FrameSource } from "../engine/renderer";
 import { computeGeometry } from "./frame";
 import { NO_LINE_START } from "./ruby";
+import { kanaToRomaji, romajiKey } from "./romaji";
 import { activeSubtitleAt } from "./subtitles";
 import type { AnimeRenderOptions, AnimeSubtitle, RubySegment } from "./types";
 
@@ -16,10 +17,12 @@ const EN_FONT = `"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
 
 const JA_SIZE = 64; // px on a 1080-wide canvas
 const EN_SIZE = 46;
+const RO_SIZE = 38;
 const RUBY_RATIO = 0.46;
 const JA_COLOR = "#ffffff";
 const RUBY_COLOR = "#ffd666";
 const EN_COLOR = "#c9f1ff";
+const RO_COLOR = "#e4e0ff";
 
 interface Cell {
   text: string;
@@ -51,31 +54,35 @@ export function drawAnimeFrame(ctx: Ctx, W: number, H: number, src: FrameSource,
     const g = computeGeometry(src.width, src.height, W, H);
     src.draw(ctx, 0, 0, src.width, src.height, g.video.x, g.video.y, g.video.w, g.video.h);
     const sub = activeSubtitleAt(o.subtitles, o.t);
-    if (sub) drawSubtitle(ctx, W, g.text, sub, o.layout);
+    if (sub) drawSubtitle(ctx, W, g.text, sub, o);
   }
   ctx.restore();
 }
 
-function drawSubtitle(ctx: Ctx, W: number, area: { x: number; y: number; w: number; h: number }, sub: AnimeSubtitle, layout: AnimeRenderOptions["layout"]) {
+function drawSubtitle(ctx: Ctx, W: number, area: { x: number; y: number; w: number; h: number }, sub: AnimeSubtitle, o: AnimeRenderOptions) {
+  const layout = o.layout;
   const k = W / 1080;
   const showJa = layout !== "en" && sub.ja.length > 0;
   const showEn = layout !== "ja" && sub.en.trim().length > 0;
   if (!showJa && !showEn) return;
+  // Stored romaji if it matches the current Japanese, otherwise an immediate (unspaced) reading from the furigana.
+  const romaji = showJa && o.romaji ? (sub.romaji && sub.romajiFor === romajiKey(sub.ja) ? sub.romaji : kanaToRomaji(sub.ja.map((s) => s.ruby ?? s.text).join(""))) : "";
   const enFirst = layout === "swapped";
   const maxW = W * 0.9;
   const pad = 28 * k;
   const availH = Math.max(40, area.h - pad * 2);
+  const userScale = Math.min(1.5, Math.max(0.7, o.fontScale ?? 1));
 
   // Shrink the whole stack until it fits the band (wrapping changes with size, so measure again each pass).
-  let scale = 1;
-  let built = build(ctx, sub, showJa, showEn, k, scale, maxW);
+  let scale = userScale;
+  let built = build(ctx, sub, showJa, showEn, romaji, k, scale, maxW);
   for (let i = 0; i < 6 && built.height > availH && scale > 0.4; i++) {
     scale *= Math.max(0.4 / scale, Math.min(0.92, availH / built.height));
-    built = build(ctx, sub, showJa, showEn, k, scale, maxW);
+    built = build(ctx, sub, showJa, showEn, romaji, k, scale, maxW);
   }
 
   let y = area.y + pad + Math.max(0, (availH - built.height) / 2);
-  const blocks = enFirst ? [built.en, built.ja] : [built.ja, built.en];
+  const blocks = enFirst ? [built.en, built.ja, built.ro] : [built.ja, built.ro, built.en];
   for (const block of blocks) {
     if (!block) continue;
     block.draw(W / 2, y);
@@ -88,12 +95,14 @@ interface Block {
   draw(cx: number, top: number): void;
 }
 
-function build(ctx: Ctx, sub: AnimeSubtitle, showJa: boolean, showEn: boolean, k: number, scale: number, maxW: number) {
+function build(ctx: Ctx, sub: AnimeSubtitle, showJa: boolean, showEn: boolean, romaji: string, k: number, scale: number, maxW: number) {
   const ja = showJa ? buildJa(ctx, sub.ja, JA_SIZE * k * scale, maxW) : null;
+  const ro = romaji ? buildEn(ctx, romaji, RO_SIZE * k * scale, maxW, RO_COLOR, "italic 500") : null;
   const en = showEn ? buildEn(ctx, sub.en.trim(), EN_SIZE * k * scale, maxW) : null;
-  const gap = ja && en ? 22 * k * scale : 0;
-  const height = (ja?.height ?? 0) + (en?.height ?? 0) + gap;
-  return { ja, en, gap, height };
+  const n = [ja, ro, en].filter(Boolean).length;
+  const gap = n > 1 ? 18 * k * scale : 0;
+  const height = (ja?.height ?? 0) + (ro?.height ?? 0) + (en?.height ?? 0) + gap * Math.max(0, n - 1);
+  return { ja, ro, en, gap, height };
 }
 
 function outlined(ctx: Ctx, text: string, x: number, y: number, fill: string, lineWidth: number) {
@@ -203,8 +212,8 @@ function buildJa(ctx: Ctx, segs: RubySegment[], fs: number, maxW: number): Block
   };
 }
 
-function buildEn(ctx: Ctx, text: string, fs: number, maxW: number): Block {
-  const font = `600 ${fs}px ${EN_FONT}`;
+function buildEn(ctx: Ctx, text: string, fs: number, maxW: number, color = EN_COLOR, weight = "600"): Block {
+  const font = `${weight} ${fs}px ${EN_FONT}`;
   ctx.font = font;
   const space = ctx.measureText(" ").width;
   const lines: { text: string; width: number }[] = [];
@@ -231,7 +240,7 @@ function buildEn(ctx: Ctx, text: string, fs: number, maxW: number): Block {
       ctx.textAlign = "center";
       ctx.textBaseline = "alphabetic";
       ctx.lineJoin = "round";
-      lines.forEach((l, i) => outlined(ctx, l.text, cx, top + i * lineH + fs * 0.98, EN_COLOR, fs * 0.2));
+      lines.forEach((l, i) => outlined(ctx, l.text, cx, top + i * lineH + fs * 0.98, color, fs * 0.2));
       ctx.restore();
     },
   };

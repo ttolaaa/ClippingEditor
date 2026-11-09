@@ -9,18 +9,19 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   const big = tooLarge(req, 200_000);
   if (big) return big;
-  const body = (await req.json().catch(() => null)) as { lines?: unknown[] } | null;
+  const body = (await req.json().catch(() => null)) as { lines?: unknown[]; readings?: boolean } | null;
   const lines = (body?.lines ?? []).slice(0, 60).map((l) => String(l ?? "").slice(0, 300));
   if (!lines.length) return NextResponse.json({ translations: [] });
+  const readings = body?.readings === true;
   const chars = lines.reduce((n, l) => n + l.length + 20, 0) + PROMPT_OVERHEAD_CHARS;
 
-  const lease = admit(req, "translate", { tokens: estimateTokens(chars, TRANSLATE_MAX_OUTPUT) });
+  const lease = admit(req, "translate", { tokens: estimateTokens(chars, readings ? TRANSLATE_MAX_OUTPUT * 2 : TRANSLATE_MAX_OUTPUT) });
   if (lease instanceof NextResponse) return lease;
   const usage = { tokens: 0 };
   try {
-    const translations = await aiTranslateLines(lines, usage);
+    const { en, ruby } = await aiTranslateLines(lines, usage, readings);
     lease.settle({ tokens: usage.tokens });
-    return NextResponse.json({ translations });
+    return NextResponse.json(readings ? { translations: en, ruby } : { translations: en });
   } catch (e) {
     lease.settle({ tokens: usage.tokens });
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });

@@ -5,6 +5,7 @@ import { cx } from "@/lib/client";
 import AnimeAutoPanel from "./AnimeAutoPanel";
 import AnimeClipper from "./AnimeClipper";
 import ProjectList from "./ProjectList";
+import GeminiQuotaBanner from "./GeminiQuotaBanner";
 
 type Mode = "auto" | "manual";
 
@@ -25,6 +26,8 @@ export default function AnimeHome() {
           Reels with furigana and an English translation. The original frame is never cropped. Everything runs in your browser.
         </p>
       </div>
+
+      <GeminiQuotaBanner />
 
       <div className="mb-6 inline-flex rounded-full border border-black/10 bg-black/[0.03] p-1 text-sm font-medium" role="tablist" aria-label="Anime Clipper mode">
         {(

@@ -13,8 +13,11 @@ export interface AnimeSubtitle {
   en: string;
   /** Why this line should be checked by a person (possible mishearing / uncertain translation). Cleared once edited or confirmed. */
   review?: string;
-  /** Where the English came from: the user's subtitle file, machine translation, or typed by the user. */
-  enSource?: "file" | "machine" | "user";
+  /** Where the English came from: the user's subtitle file, cloud AI (from the audio), on-device machine translation, or typed by the user. */
+  enSource?: "file" | "cloud" | "machine" | "user";
+  /** Romaji reading of the Japanese (Hepburn, with word spacing), and the Japanese text it was made from (stale if different). */
+  romaji?: string;
+  romajiFor?: string;
 }
 
 /**
@@ -31,6 +34,10 @@ export type BackgroundMode = "blur" | "dark";
 export interface AnimeRenderOptions {
   layout: SubtitleLayout;
   background: BackgroundMode;
+  /** Show a romaji line under the Japanese (e.g. watashi wa…). */
+  romaji?: boolean;
+  /** Subtitle text size multiplier (1 = default; 0.7–1.5). */
+  fontScale?: number;
 }
 
 export const SUBTITLE_LAYOUTS: { id: SubtitleLayout; label: string; letter: string; hint: string }[] = [

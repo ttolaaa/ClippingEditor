@@ -15,7 +15,22 @@ export interface UsageSink {
 
 export async function chatJSON<T>(system: string, user: string, maxTokens = 3000, usage?: UsageSink): Promise<T | null> {
   const c = getOpenAI();
-  if (!c) return null;
+  if (!c) {
+    if (config.geminiKey) {
+      const { geminiJSON } = await import("./gemini");
+      try {
+        // Gemini models may spend part of the budget on thinking, so give them room beyond the visible answer.
+        return await geminiJSON<T>([{ text: user }], { system, maxTokens: maxTokens * 2 + 2048, temperature: 0.4, usage });
+      } catch (e) {
+        // Gemini's daily limit used up / Gemini unreachable: Groq takes over when it's set up.
+        if (!config.groqKey) throw e;
+        console.warn("Gemini failed, using Groq:", (e as Error).message);
+      }
+    }
+    if (!config.groqKey) return null;
+    const { groqJSON } = await import("./groq");
+    return groqJSON<T>(system, user, maxTokens * 2 + 2048, usage);
+  }
   const res = await c.chat.completions.create({
     model: config.openaiModel,
     temperature: 0.4,

@@ -25,13 +25,22 @@ export function LayoutPicker({
   onLayout,
   onBackground,
   compact,
+  romaji,
+  onRomaji,
+  fontScale,
+  onFontScale,
 }: {
   layout: SubtitleLayout;
   background: BackgroundMode;
   onLayout: (l: SubtitleLayout) => void;
   onBackground: (b: BackgroundMode) => void;
   compact?: boolean;
+  romaji?: boolean;
+  onRomaji?: (on: boolean) => void;
+  fontScale?: number;
+  onFontScale?: (scale: number) => void;
 }) {
+  const scale = fontScale ?? 1;
   return (
     <div>
       <div className={cx("grid gap-3", compact ? "grid-cols-2" : "sm:grid-cols-2")}>
@@ -62,6 +71,40 @@ export function LayoutPicker({
           Solid dark
         </Chip>
       </div>
+      {(onRomaji || onFontScale) && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+          {onRomaji && (
+            <span className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-black/45">Romaji</span>
+              <Chip active={!!romaji} onClick={() => onRomaji(!romaji)} title="Show the reading in Latin letters under the Japanese, e.g. watashi wa…">
+                {romaji ? "On · watashi wa…" : "Off"}
+              </Chip>
+            </span>
+          )}
+          {onFontScale && (
+            <label className="flex items-center gap-2 text-xs">
+              <span className="font-semibold uppercase tracking-wider text-black/45">Text size</span>
+              <button type="button" aria-label="Smaller text" onClick={() => onFontScale(Math.max(0.7, Math.round((scale - 0.1) * 10) / 10))} className="rounded-full border border-black/15 px-2 py-0.5 font-bold hover:border-black">
+                A−
+              </button>
+              <input
+                type="range"
+                min={0.7}
+                max={1.5}
+                step={0.05}
+                value={scale}
+                onChange={(e) => onFontScale(Number(e.target.value))}
+                className="w-28"
+                aria-label="Subtitle text size"
+              />
+              <button type="button" aria-label="Bigger text" onClick={() => onFontScale(Math.min(1.5, Math.round((scale + 0.1) * 10) / 10))} className="rounded-full border border-black/15 px-2 py-0.5 font-bold hover:border-black">
+                A+
+              </button>
+              <span className="w-10 tabular-nums text-black/55">{Math.round(scale * 100)}%</span>
+            </label>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -124,6 +167,7 @@ export function SubtitleRow({
   onChange,
   onDelete,
   onSeek,
+  playhead,
 }: {
   sub: AnimeSubtitle;
   active: boolean;
@@ -131,6 +175,8 @@ export function SubtitleRow({
   onChange: (s: AnimeSubtitle) => void;
   onDelete: () => void;
   onSeek: () => void;
+  /** Current preview time (source seconds): enables "Start/End at playhead" for quick sync fixes. */
+  playhead?: number;
 }) {
   const [markup, setMarkup] = useState(() => segmentsToMarkup(sub.ja));
   const [from, setFrom] = useState(() => formatTime(sub.start, 2));
@@ -197,6 +243,30 @@ export function SubtitleRow({
         <button type="button" onClick={onSeek} className="rounded-md px-2 py-1 text-xs text-black/55 hover:bg-black/5 hover:text-black">
           ▶ Go to
         </button>
+        {playhead !== undefined && (
+          <>
+            <button
+              type="button"
+              title="Set this line's start to the current preview time (pause where the voice starts, then click)"
+              onClick={() => {
+                const s = Math.round(playhead * 100) / 100;
+                edit({ ...sub, start: s, end: sub.end > s + 0.3 ? sub.end : s + Math.max(1, sub.end - sub.start) });
+              }}
+              className="rounded-md px-2 py-1 text-xs text-black/55 hover:bg-black/5 hover:text-black"
+            >
+              ⇤ Start at playhead
+            </button>
+            <button
+              type="button"
+              title="Set this line's end to the current preview time (pause where the voice stops, then click)"
+              disabled={playhead <= sub.start + 0.2}
+              onClick={() => edit({ ...sub, end: Math.round(playhead * 100) / 100 })}
+              className="rounded-md px-2 py-1 text-xs text-black/55 hover:bg-black/5 hover:text-black disabled:opacity-40"
+            >
+              End at playhead ⇥
+            </button>
+          </>
+        )}
         <button type="button" onClick={reannotate} disabled={working} className="rounded-md px-2 py-1 text-xs text-black/55 hover:bg-black/5 hover:text-black disabled:opacity-50">
           {working ? "Adding furigana…" : "↻ Auto furigana"}
         </button>
@@ -227,7 +297,13 @@ export function SubtitleRow({
         {sub.en && sub.enSource && (
           <p className="text-[11px] text-black/45">
             English:{" "}
-            {sub.enSource === "file" ? "from your subtitle file" : sub.enSource === "user" ? "edited by you" : "machine translation — check it before posting"}
+            {sub.enSource === "file"
+              ? "from your subtitle file"
+              : sub.enSource === "user"
+                ? "edited by you"
+                : sub.enSource === "cloud"
+                  ? "cloud AI translation from the audio"
+                  : "machine translation — check it before posting"}
           </p>
         )}
       </div>

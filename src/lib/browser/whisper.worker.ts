@@ -15,6 +15,8 @@ export interface WhisperRequest {
   language?: string;
   /** Only transcribe detected speech (Silero VAD). Prevents hallucinated text over music/silence. */
   vad?: boolean;
+  /** Only detect speech (no transcription): replies { type: "done", regions } with speech stretches in seconds. */
+  task?: "vad";
 }
 
 const RATE = 16000;
@@ -109,7 +111,16 @@ function quietest(audio: Float32Array, center: number, radius: number) {
 }
 
 self.onmessage = async (e: MessageEvent<WhisperRequest>) => {
-  const { pcm, model, language, vad } = e.data;
+  const { pcm, model, language, vad, task } = e.data;
+  if (task === "vad") {
+    try {
+      const regions = await speechRegions(pcm, (f) => post({ type: "progress", value: f, detail: "Finding exactly when people speak…" }));
+      post({ type: "done", regions });
+    } catch (err) {
+      post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
   try {
     const total = pcm.length / RATE;
     const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -187,11 +198,10 @@ type VadModel = (inputs: Record<string, Tensor>) => Promise<{ output: Tensor; st
 let vadModel: VadModel | null = null;
 
 /**
- * Speech windows for Whisper: Silero VAD finds speech frames (robust to music), short gaps are bridged, each region is
- * padded, and neighbouring regions are grouped into windows of at most ~25 s. Whisper invents text for music and
- * silence, so it only ever sees these windows.
+ * Speech stretches (seconds, unpadded): Silero VAD speech frames (robust to music), split where there's more than 0.4 s
+ * without speech, ignoring blips under 0.25 s.
  */
-async function speechWindows(pcm: Float32Array, onProgress: (f: number) => void): Promise<{ s: number; e: number }[]> {
+async function speechRegions(pcm: Float32Array, onProgress: (f: number) => void): Promise<{ s: number; e: number }[]> {
   vadModel ??= (await withRetry(
     () => AutoModel.from_pretrained("onnx-community/silero-vad", { config: { model_type: "custom" }, dtype: "fp32", device: "wasm" } as never),
     () => undefined,
@@ -219,7 +229,7 @@ async function speechWindows(pcm: Float32Array, onProgress: (f: number) => void)
         regions.push(cur);
         cur = null;
         quiet = 0;
-      } else cur.e = t + step;
+      }
     }
     if (performance.now() - lastPost > 250) {
       lastPost = performance.now();
@@ -227,8 +237,18 @@ async function speechWindows(pcm: Float32Array, onProgress: (f: number) => void)
     }
   }
   if (cur) regions.push(cur);
+  return regions.filter((r) => r.e - r.s >= 0.25);
+}
+
+/**
+ * Speech windows for Whisper: speech regions, padded, and neighbouring regions grouped into windows of at most ~25 s.
+ * Whisper invents text for music and silence, so it only ever sees these windows.
+ */
+async function speechWindows(pcm: Float32Array, onProgress: (f: number) => void): Promise<{ s: number; e: number }[]> {
+  const regions = await speechRegions(pcm, onProgress);
   const total = pcm.length / RATE;
-  const padded = regions.filter((r) => r.e - r.s >= 0.25).map((r) => ({ s: Math.max(0, r.s - 0.25), e: Math.min(total, r.e + 0.3) }));
+  // Regions end at the last speech frame; pad the end a bit more so trailing soft syllables stay in Whisper's window.
+  const padded = regions.map((r) => ({ s: Math.max(0, r.s - 0.25), e: Math.min(total, r.e + 0.6) }));
   const windows: { s: number; e: number }[] = [];
   for (const r of padded) {
     const w = windows[windows.length - 1];

@@ -26,13 +26,13 @@ interface Props extends AnimeRenderOptions {
 
 /** Live 9:16 preview: plays the source and draws the exact export frame (video + subtitles) on a canvas. */
 const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview(
-  { src, start, end, layout, background, subtitles, className, muted, autoPlay, loop = false, onTime, onPlayingChange },
+  { src, start, end, layout, background, romaji, fontScale, subtitles, className, muted, autoPlay, loop = false, onTime, onPlayingChange },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const props = useRef({ start, end, layout, background, subtitles, onTime, loop });
-  props.current = { start, end, layout, background, subtitles, onTime, loop };
+  const props = useRef({ start, end, layout, background, romaji, fontScale, subtitles, onTime, loop });
+  props.current = { start, end, layout, background, romaji, fontScale, subtitles, onTime, loop };
 
   const draw = useCallback(() => {
     const v = videoRef.current;
@@ -50,7 +50,14 @@ const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview
     const ctx = c.getContext("2d");
     if (!ctx) return;
     if (v.readyState >= 2 && v.videoWidth) {
-      drawAnimeFrame(ctx, W, H, elementSource(v, v.videoWidth, v.videoHeight), { layout: p.layout, background: p.background, subtitles: p.subtitles, t: v.currentTime });
+      drawAnimeFrame(ctx, W, H, elementSource(v, v.videoWidth, v.videoHeight), {
+        layout: p.layout,
+        background: p.background,
+        romaji: p.romaji,
+        fontScale: p.fontScale,
+        subtitles: p.subtitles,
+        t: v.currentTime,
+      });
     } else {
       ctx.fillStyle = "#0b0b12";
       ctx.fillRect(0, 0, W, H);
@@ -81,7 +88,7 @@ const AnimePreview = forwardRef<AnimePreviewHandle, Props>(function AnimePreview
 
   useEffect(() => {
     draw();
-  }, [draw, layout, background, subtitles]);
+  }, [draw, layout, background, romaji, fontScale, subtitles]);
 
   useEffect(() => {
     const c = canvasRef.current;

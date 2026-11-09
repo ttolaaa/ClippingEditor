@@ -149,6 +149,25 @@ export function sortSubtitles(subs: AnimeSubtitle[]): AnimeSubtitle[] {
   return [...subs].sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
+/**
+ * Subtitle-style display times on top of speech-accurate starts: each line stays up long enough to read its English
+ * (~17 characters/second, at least 1.2 s), and a short pause (≤ 1.5 s) before the next line is bridged so the text doesn't
+ * blink off and on. Starts are never moved and lines never overlap.
+ */
+export function readableTiming<T extends { start: number; end: number; en: string }>(subs: T[]): T[] {
+  const out = [...subs].sort((a, b) => a.start - b.start).map((s) => ({ ...s }));
+  for (let i = 0; i < out.length; i++) {
+    const s = out[i];
+    const next = out[i + 1];
+    const read = Math.max(1.2, s.en.trim().length / 17);
+    let end = Math.max(s.end, s.start + read);
+    if (next && next.start - end <= 1.5) end = Math.max(end, next.start - 0.05);
+    if (next) end = Math.min(end, Math.max(s.start + 0.3, next.start - 0.05));
+    s.end = end;
+  }
+  return out;
+}
+
 export function toSubtitleFile(subs: AnimeSubtitle[], meta: { name?: string; duration?: number; clip?: { start: number; end: number } } = {}): AnimeSubtitleFile {
   return {
     version: 1,

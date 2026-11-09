@@ -5,9 +5,11 @@ import { cx, formatBytes, slugify } from "@/lib/client";
 import { ProgressBar } from "@/components/ui";
 import AnimePreview, { type AnimePreviewHandle } from "@/components/AnimePreview";
 import { type AnimeSubtitle, type BackgroundMode, type SubtitleLayout } from "@/lib/anime/types";
-import { annotateFurigana } from "@/lib/anime/furigana";
+import { annotateFurigana, furiganaFromPairs } from "@/lib/anime/furigana";
+import { romajiKey, withRomaji } from "@/lib/anime/romaji";
 import { formatTime, newSubtitleId, parseSubtitleFile, parseTime, sortSubtitles, toSubtitleFile } from "@/lib/anime/subtitles";
 import { ANIME_WHISPER_MODELS, exportAnimeVideo, generateSubtitles, prepareVideo, type AnimeWhisperModel, type PreparedVideo } from "@/lib/anime/generate";
+import { serverCaps } from "@/lib/browser/pipeline";
 import { Chip, LayoutPicker, SubtitleRow, downloadBlob as download } from "@/components/AnimeControls";
 
 type Phase = { kind: "idle" } | { kind: "preparing" | "generating" | "exporting"; detail: string; progress?: number };
@@ -24,8 +26,35 @@ export default function AnimeClipper() {
   const [endText, setEndText] = useState("0:00");
   const [layout, setLayout] = useState<SubtitleLayout>("both");
   const [background, setBackground] = useState<BackgroundMode>("blur");
-  const [model, setModel] = useState<AnimeWhisperModel>("small");
+  const [romaji, setRomaji] = useState(false);
+  const [fontScale, setFontScale] = useState(1);
+  const [model, setModel] = useState<AnimeWhisperModel | "cloud">("small");
+  const [cloudModel, setCloudModel] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    serverCaps().then((c) => {
+      if (!alive || !c.cloudJapanese) return;
+      setCloudModel(c.speechModel ?? "Gemini");
+      setModel((m) => (m === "small" ? "cloud" : m));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const [subs, setSubs] = useState<AnimeSubtitle[]>([]);
+  // With romaji on, (re)make it for lines whose Japanese or readings changed.
+  const romajiStale = romaji ? subs.filter((s) => s.ja.length && s.romajiFor !== romajiKey(s.ja)).length : 0;
+  useEffect(() => {
+    if (!romajiStale) return;
+    let alive = true;
+    withRomaji(subs)
+      .then((next) => alive && next !== subs && setSubs(next))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [romajiStale, romaji]);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
@@ -102,7 +131,7 @@ export default function AnimeClipper() {
         onStatus: (detail, progress) => setPhase({ kind: "generating", detail, progress }),
       });
       setSubs((cur) => sortSubtitles([...cur.filter((s) => s.end <= start || s.start >= end), ...r.subtitles]));
-      setNotes([`Generated ${r.subtitles.length} subtitles (${r.translationProvider === "cloud" ? "cloud" : "on-device"} translation). Review and edit them below.`, ...r.warnings]);
+      setNotes([`Generated ${r.subtitles.length} subtitles (${r.translationProvider === "cloud" ? "cloud AI" : "on-device"} translation). Review and edit them below.`, ...r.warnings]);
     } catch (e) {
       setError(`Subtitle generation failed: ${(e as Error).message}`);
     } finally {
@@ -118,7 +147,7 @@ export default function AnimeClipper() {
     setPhase({ kind: "exporting", detail: "Rendering 1080×1920 MP4…", progress: 0 });
     try {
       const blob = await exportAnimeVideo(
-        { file: video.file, start, end, subtitles: subs, layout, background, hasAudio: video.info.hasAudio, audioFallback: video.audioFallback },
+        { file: video.file, start, end, subtitles: subs, layout, background, romaji, fontScale, hasAudio: video.info.hasAudio, audioFallback: video.audioFallback },
         (f) => setPhase({ kind: "exporting", detail: "Rendering 1080×1920 MP4…", progress: f }),
         ctrl.signal,
       );
@@ -178,12 +207,12 @@ export default function AnimeClipper() {
       const tr = await translateToEnglish(
         cues.map((c) => c.text),
         (detail, progress) => setPhase({ kind: "generating", detail, progress: progress === undefined ? undefined : progress * 0.8 }),
-      ).catch(() => ({ translations: cues.map(() => ""), uncertain: cues.map(() => true), provider: "browser" as const, note: "Translation failed — type the English." }));
+      ).catch(() => ({ translations: cues.map(() => ""), uncertain: cues.map(() => true), provider: "browser" as const, note: "Translation failed — type the English.", fromCloud: cues.map(() => false), ruby: cues.map(() => undefined) }));
       const next: AnimeSubtitle[] = [];
       for (let i = 0; i < cues.length; i++) {
         const en = tr.translations[i] ?? "";
-        const review = !en ? "Check: no reliable English — please type it" : tr.uncertain[i] ? "Check: translation was uncertain" : undefined;
-        next.push({ id: newSubtitleId(), start: cues[i].start, end: cues[i].end, ja: await annotateFurigana(cues[i].text).catch(() => [{ text: cues[i].text }]), en, enSource: "machine", ...(review ? { review } : {}) });
+        const review = !en ? "Check: no reliable English — please type it" : tr.uncertain[i] && !tr.fromCloud[i] ? "Check: translation was uncertain" : undefined;
+        next.push({ id: newSubtitleId(), start: cues[i].start, end: cues[i].end, ja: await furiganaFromPairs(cues[i].text, tr.ruby[i]).catch(() => [{ text: cues[i].text }]), en, enSource: tr.fromCloud[i] ? "cloud" : "machine", ...(review ? { review } : {}) });
         setPhase({ kind: "generating", detail: "Adding furigana…", progress: 0.8 + 0.2 * ((i + 1) / cues.length) });
       }
       setSubs(sortSubtitles(next));
@@ -219,6 +248,8 @@ export default function AnimeClipper() {
                   end={end}
                   layout={layout}
                   background={background}
+                  romaji={romaji}
+                  fontScale={fontScale}
                   subtitles={subs}
                   className="h-full w-full"
                   onTime={onTime}
@@ -326,7 +357,16 @@ export default function AnimeClipper() {
           </Card>
 
           <Card step={3} title="Subtitle layout" disabled={!video}>
-            <LayoutPicker layout={layout} background={background} onLayout={setLayout} onBackground={setBackground} />
+            <LayoutPicker
+              layout={layout}
+              background={background}
+              onLayout={setLayout}
+              onBackground={setBackground}
+              romaji={romaji}
+              onRomaji={setRomaji}
+              fontScale={fontScale}
+              onFontScale={setFontScale}
+            />
           </Card>
 
           <Card step={4} title="Subtitles" disabled={!video}>
@@ -336,7 +376,14 @@ export default function AnimeClipper() {
                   {ANIME_WHISPER_MODELS[m].label}
                 </Chip>
               ))}
-              <span className="text-xs text-black/45">{ANIME_WHISPER_MODELS[model].note}</span>
+              {cloudModel && (
+                <Chip active={model === "cloud"} onClick={() => setModel("cloud")} title={`${cloudModel} listens to the audio and translates it`}>
+                  Cloud AI (Gemini)
+                </Chip>
+              )}
+              <span className="text-xs text-black/45">
+                {model === "cloud" ? `Most accurate · ${cloudModel} listens to this range and translates it with context` : ANIME_WHISPER_MODELS[model].note}
+              </span>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <button
@@ -392,7 +439,8 @@ export default function AnimeClipper() {
                       outside={s.end <= start || s.start >= end}
                       onChange={(next) => update(s.id, next)}
                       onDelete={() => remove(s.id)}
-                      onSeek={() => player.current?.seek(Math.max(s.start, 0))}
+                      onSeek={() => player.current?.seek(Math.max(s.start + 0.05, 0))}
+                      playhead={now}
                     />
                   ))}
                 </ul>
