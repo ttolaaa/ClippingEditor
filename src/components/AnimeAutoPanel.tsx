@@ -42,6 +42,7 @@ export default function AnimeAutoPanel() {
   }, []);
   const qualities = (Object.keys(ANIME_QUALITY) as AnimeQuality[]).filter((q) => q !== "cloud" || cloudModel);
   const [subFiles, setSubFiles] = useState<SubFileEntry[]>([]);
+  const [withSubs, setWithSubs] = useState(true);
   const [layout, setLayout] = useState<SubtitleLayout>("both");
   const [background, setBackground] = useState<BackgroundMode>("blur");
   const [romaji, setRomaji] = useState(false);
@@ -75,8 +76,9 @@ export default function AnimeAutoPanel() {
         transcription: "browser",
         whisperModel: ANIME_QUALITY[quality].scan,
         subtitleModel: ANIME_QUALITY[quality].subtitles,
+        subtitles: withSubs,
         vad: true,
-      }, cuesFromEntries(subFiles));
+      }, withSubs ? cuesFromEntries(subFiles) : undefined);
       router.push(`/jobs/${id}`);
     } catch (e) {
       setError(`Couldn't save the video in your browser: ${(e as Error).message}`);
@@ -168,7 +170,9 @@ export default function AnimeAutoPanel() {
             ))}
           </div>
           <p className="mt-1.5 text-xs text-black/45">
-            {quality === "cloud" ? (
+            {!withSubs ? (
+              <>{ANIME_QUALITY[quality].note}. The speech is only scanned to find the viral moments; no subtitles are made.</>
+            ) : quality === "cloud" ? (
               <>
                 {ANIME_QUALITY.cloud.note}. A quick on-device scan finds the viral moments, then the picked clips&apos; audio (only those minutes) is sent
                 to {cloudModel}, which writes the Japanese and translates it with the scene&apos;s context.
@@ -182,32 +186,61 @@ export default function AnimeAutoPanel() {
           </p>
         </Field>
         <Field label="Subtitles">
-          <p className="text-sm text-black/60">Japanese + furigana + English translation, generated automatically for every clip. Editable afterwards.</p>
+          <div className="flex flex-wrap gap-2">
+            <Chip active={withSubs} onClick={() => setWithSubs(true)}>
+              With subtitles
+            </Chip>
+            <Chip active={!withSubs} onClick={() => setWithSubs(false)}>
+              No subtitles
+            </Chip>
+          </div>
+          <p className="mt-1.5 text-xs text-black/45">
+            {withSubs
+              ? "Japanese + furigana + English translation, generated automatically for every clip. Editable afterwards."
+              : "Clips are cut without subtitles, which is faster. You can still import subtitle files on the project page later."}
+          </p>
         </Field>
-        <div className="md:col-span-2">
-          <Field label="Subtitle / transcript files (optional — most accurate)">
-            <p className="mb-2 text-xs text-black/50">
-              Have the video&apos;s subtitles? Add them (.srt, .vtt, .ass/.ssa, timestamped .txt or JSON). A <b>Japanese</b> file replaces speech recognition, so the
-              Japanese is exact and processing is much faster. An <b>English</b> file is used as the translation, line by line. Without an English file the English is
-              machine-translated and labelled as such.
-            </p>
-            <SubtitleFilePicker value={subFiles} onChange={setSubFiles} />
-          </Field>
-        </div>
-        <div className="md:col-span-2">
-          <Field label="Default subtitle layout (can be changed per clip)">
-            <LayoutPicker
-              layout={layout}
-              background={background}
-              onLayout={setLayout}
-              onBackground={setBackground}
-              romaji={romaji}
-              onRomaji={setRomaji}
-              fontScale={fontScale}
-              onFontScale={setFontScale}
-            />
-          </Field>
-        </div>
+        {withSubs ? (
+          <>
+            <div className="md:col-span-2">
+              <Field label="Subtitle / transcript files (optional — most accurate)">
+                <p className="mb-2 text-xs text-black/50">
+                  Have the video&apos;s subtitles? Add them (.srt, .vtt, .ass/.ssa, timestamped .txt or JSON). A <b>Japanese</b> file replaces speech recognition, so the
+                  Japanese is exact and processing is much faster. An <b>English</b> file is used as the translation, line by line. Without an English file the English is
+                  machine-translated and labelled as such.
+                </p>
+                <SubtitleFilePicker value={subFiles} onChange={setSubFiles} />
+              </Field>
+            </div>
+            <div className="md:col-span-2">
+              <Field label="Default subtitle layout (can be changed per clip)">
+                <LayoutPicker
+                  layout={layout}
+                  background={background}
+                  onLayout={setLayout}
+                  onBackground={setBackground}
+                  romaji={romaji}
+                  onRomaji={setRomaji}
+                  fontScale={fontScale}
+                  onFontScale={setFontScale}
+                />
+              </Field>
+            </div>
+          </>
+        ) : (
+          <div className="md:col-span-2">
+            <Field label="Letterbox fill">
+              <div className="flex flex-wrap gap-2">
+                <Chip active={background === "blur"} onClick={() => setBackground("blur")}>
+                  Blurred video
+                </Chip>
+                <Chip active={background === "dark"} onClick={() => setBackground("dark")}>
+                  Solid dark
+                </Chip>
+              </div>
+            </Field>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-4 border-t border-black/10 px-6 py-4">

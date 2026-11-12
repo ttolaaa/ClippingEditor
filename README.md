@@ -133,14 +133,14 @@ To get every reel at once, click **Download all (.zip)** at the top of the proje
 
 Open **Anime Clipper** from the switch in the header (`/anime`). Drop an anime episode (or any Japanese-language video) and it **finds the most viral moments automatically**, cuts them into ranked 30-second, 60-second and 2-minute Reels, and subtitles each one with **Japanese + furigana** and an **English translation**. Like the rest of the app it runs in your browser; nothing is uploaded.
 
-It has two modes, switchable at the top of the page:
+It has three modes, switchable at the top of the page:
 
-| | **Auto viral clips** (default) | **Manual range** |
-| --- | --- | --- |
-| Picks the clips | The app analyses the whole video and ranks the best moments by viral score | You choose one exact time range |
-| Clip lengths | 30s, 60s and/or 2 min, several per length | Whatever range you type |
-| Subtitles | Generated for every clip | Generated for your range |
-| Saved | Yes, as a project in this browser (listed under **Your anime projects**) | No: download the subtitle JSON to keep your edits |
+| | **Auto viral clips** (default) | **Split into clips** | **Manual range** |
+| --- | --- | --- | --- |
+| Picks the clips | The app analyses the whole video and ranks the best moments by viral score | The whole video, cut back to back from start to end | You choose one exact time range |
+| Clip lengths | 30s, 60s and/or 2 min, several per length | 30s, 60s or 2 min (a 60-minute video gives 120, 60 or 30 clips) | Whatever range you type |
+| Subtitles | Optional: on (generated for every clip) or off | Optional: with or without subtitles | Optional: on (generated for your range) or off |
+| Saved | Yes, as a project in this browser (listed under **Your anime projects**) | No: each clip is downloaded (or saved to a folder) as soon as it's ready | No: download the subtitle JSON to keep your edits |
 
 Compared with the Viral Clipper, the frame is **never cropped** (the whole picture is kept, centred in 9:16), and captions are bilingual subtitles rather than word-by-word captions.
 
@@ -154,6 +154,7 @@ Compared with the Viral Clipper, the frame is **never cropped** (the whole pictu
    | **Clip lengths** | 30s, 60s and/or 2 min. A 2-minute reel needs a video of at least about 1.5 minutes. |
    | **Clips per length** | How many reels to make for each length (1–6). |
    | **Japanese speech recognition** | **Fast**, **Balanced** (default) or **Best**; see [Speech recognition quality](#speech-recognition-quality). |
+   | **Subtitles** | **With subtitles** (default) or **No subtitles**. With subtitles off, the speech is still scanned to find the moments, but the subtitle pass (translation and furigana) is skipped and the clips have no subtitles. |
    | **Subtitle / transcript files** (optional) | Your Japanese and/or English subtitle files. **The most accurate option**; see [Using your own subtitle files](#using-your-own-subtitle-files). |
    | **Default subtitle layout** | A, B, C or D, plus blurred or dark fill. You can change it per clip later. |
 3. **Find viral anime clips.** You're taken to the project page, which shows live progress: reading the video, decoding audio, **transcribing the Japanese**, scene tracking, **detecting viral moments & plot twists** (Japanese cues such as まさか, 実は, すごい, 泣, ありがとう, laughter, shouting and scene energy), ranking, then **translating & adding furigana** for the lines inside the picked clips. Keep the tab open while it works.
@@ -163,11 +164,18 @@ Compared with the Viral Clipper, the frame is **never cropped** (the whole pictu
 
 How long it takes: only the parts of the video with speech are transcribed (music and silence are skipped), and only the picked clips get the slower, accurate second pass. The first run also downloads the models once.
 
+### Split into clips, step by step
+
+1. **Video:** drop an episode or movie.
+2. **Clip length:** **30 s**, **60 s** or **2 min**. The whole video is cut into back-to-back clips of that length; the last clip is whatever is left over.
+3. **Subtitles:** **With subtitles** (pick a speech model, layout A–D, romaji and text size) or **No subtitles** (just the letterbox fill). Clips without speech are exported without subtitles.
+4. **Export:** optionally **Choose save folder** (Chrome/Edge) so clips are written straight into a folder; otherwise each clip downloads as soon as it's rendered (`<name>-part01.mp4`, `-part02.mp4`, …). Clips are made one at a time and you can **Cancel** at any point. Keep the tab open while it works.
+
 ### Manual range, step by step
 
 1. **Video:** drop a landscape or portrait video.
 2. **Clip range:** type a start and end (`m:ss`, `m:ss.s` or plain seconds), or move the playhead and press **Use playhead**.
-3. **Subtitle layout:** pick A–D and the fill (see below).
+3. **Subtitles & layout:** choose **With subtitles** or **No subtitles**, then pick A–D and the fill (see below). With **No subtitles**, step 4 is hidden and the clip is exported without subtitles.
 4. **Subtitles:** pick a speech model (**Accurate** is the default), then press **Generate Japanese + furigana + English**. Or press **Import subtitles** to load a subtitle file (.srt, .vtt, .ass/.ssa, timestamped .txt or the app's JSON): a Japanese file gives exact Japanese lines (with furigana and machine-translated English), and an English file fills in the English of the matching lines.
 5. **Review and edit**, then **Download 1080×1920 MP4**.
 

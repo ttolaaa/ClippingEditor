@@ -468,7 +468,8 @@ async function processJob(id: string) {
   stage(id, "select", { status: "done", detail: `${clips.length} clips ranked by viral score` });
 
   // 6b. Anime Clipper: Japanese subtitle lines -> English translation + furigana for every picked clip.
-  if (anime) await buildAnimeSubtitles(id, transcript, file);
+  if (anime && job.settings.subtitles === false) stage(id, "subtitle", { status: "skipped", detail: "Subtitles turned off" });
+  else if (anime) await buildAnimeSubtitles(id, transcript, file);
 
   // 7. Poster frames (previews themselves render live in the browser — no waiting)
   stage(id, "render", { status: "active", detail: "Generating 9:16 poster frames" });

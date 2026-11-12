@@ -25,6 +25,7 @@ export default function AnimeClipper() {
   const [startText, setStartText] = useState("0:00");
   const [endText, setEndText] = useState("0:00");
   const [layout, setLayout] = useState<SubtitleLayout>("both");
+  const [withSubs, setWithSubs] = useState(true);
   const [background, setBackground] = useState<BackgroundMode>("blur");
   const [romaji, setRomaji] = useState(false);
   const [fontScale, setFontScale] = useState(1);
@@ -147,7 +148,7 @@ export default function AnimeClipper() {
     setPhase({ kind: "exporting", detail: "Rendering 1080×1920 MP4…", progress: 0 });
     try {
       const blob = await exportAnimeVideo(
-        { file: video.file, start, end, subtitles: subs, layout, background, romaji, fontScale, hasAudio: video.info.hasAudio, audioFallback: video.audioFallback },
+        { file: video.file, start, end, subtitles: withSubs ? subs : [], layout, background, romaji, fontScale, hasAudio: video.info.hasAudio, audioFallback: video.audioFallback },
         (f) => setPhase({ kind: "exporting", detail: "Rendering 1080×1920 MP4…", progress: f }),
         ctrl.signal,
       );
@@ -250,7 +251,7 @@ export default function AnimeClipper() {
                   background={background}
                   romaji={romaji}
                   fontScale={fontScale}
-                  subtitles={subs}
+                  subtitles={withSubs ? subs : []}
                   className="h-full w-full"
                   onTime={onTime}
                   onPlayingChange={setPlaying}
@@ -356,19 +357,41 @@ export default function AnimeClipper() {
             </p>
           </Card>
 
-          <Card step={3} title="Subtitle layout" disabled={!video}>
-            <LayoutPicker
-              layout={layout}
-              background={background}
-              onLayout={setLayout}
-              onBackground={setBackground}
-              romaji={romaji}
-              onRomaji={setRomaji}
-              fontScale={fontScale}
-              onFontScale={setFontScale}
-            />
+          <Card step={3} title="Subtitles & layout" disabled={!video}>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Chip active={withSubs} onClick={() => setWithSubs(true)}>
+                With subtitles
+              </Chip>
+              <Chip active={!withSubs} onClick={() => setWithSubs(false)}>
+                No subtitles
+              </Chip>
+              {!withSubs && <span className="text-xs text-black/45">The clip is exported without subtitles.</span>}
+            </div>
+            {withSubs ? (
+              <LayoutPicker
+                layout={layout}
+                background={background}
+                onLayout={setLayout}
+                onBackground={setBackground}
+                romaji={romaji}
+                onRomaji={setRomaji}
+                fontScale={fontScale}
+                onFontScale={setFontScale}
+              />
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-black/45">Letterbox fill</span>
+                <Chip active={background === "blur"} onClick={() => setBackground("blur")}>
+                  Blurred video
+                </Chip>
+                <Chip active={background === "dark"} onClick={() => setBackground("dark")}>
+                  Solid dark
+                </Chip>
+              </div>
+            )}
           </Card>
 
+          {withSubs && (
           <Card step={4} title="Subtitles" disabled={!video}>
             <div className="flex flex-wrap items-center gap-2">
               {(Object.keys(ANIME_WHISPER_MODELS) as AnimeWhisperModel[]).map((m) => (
@@ -447,8 +470,9 @@ export default function AnimeClipper() {
               </div>
             )}
           </Card>
+          )}
 
-          <Card step={5} title="Export" disabled={!video}>
+          <Card step={withSubs ? 5 : 4} title="Export" disabled={!video}>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"

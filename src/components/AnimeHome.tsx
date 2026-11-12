@@ -4,10 +4,11 @@ import { useState } from "react";
 import { cx } from "@/lib/client";
 import AnimeAutoPanel from "./AnimeAutoPanel";
 import AnimeClipper from "./AnimeClipper";
+import AnimeSplitter from "./AnimeSplitter";
 import ProjectList from "./ProjectList";
 import GeminiQuotaBanner from "./GeminiQuotaBanner";
 
-type Mode = "auto" | "manual";
+type Mode = "auto" | "split" | "manual";
 
 /** Anime Clipper landing page: automatic viral clips (default) or one manually chosen range. */
 export default function AnimeHome() {
@@ -33,6 +34,7 @@ export default function AnimeHome() {
         {(
           [
             ["auto", "Auto viral clips"],
+            ["split", "Split into clips"],
             ["manual", "Manual range"],
           ] as [Mode, string][]
         ).map(([m, label]) => (
@@ -57,6 +59,8 @@ export default function AnimeHome() {
             <ProjectList kind="anime" />
           </section>
         </>
+      ) : mode === "split" ? (
+        <AnimeSplitter />
       ) : (
         <AnimeClipper />
       )}
